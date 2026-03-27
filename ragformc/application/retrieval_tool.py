@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from typing import Final
 
@@ -47,11 +48,32 @@ def build_multi_query_retrieve_docs_payload(
     *,
     context: RetrieveDocsToolContext,
 ) -> tuple[list[RetrievedDoc], str]:
+    normalized_queries = [query.strip() for query in queries if query and query.strip()]
+    if not normalized_queries:
+        return [], "No matching documents were found."
+
     merged_docs: list[RetrievedDoc] = []
     summary_parts: list[str] = []
+    max_workers = min(len(normalized_queries), 4)
 
-    for index, query in enumerate(queries, start=1):
-        docs, summary = build_retrieve_docs_payload(query, context=context)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_query: dict[Future[tuple[list[RetrievedDoc], str]], tuple[int, str]] = {}
+        for index, query in enumerate(normalized_queries, start=1):
+            future = executor.submit(
+                build_retrieve_docs_payload,
+                query,
+                context=context,
+            )
+            future_to_query[future] = (index, query)
+
+        results: list[tuple[int, str, list[RetrievedDoc], str]] = []
+        for future in as_completed(future_to_query):
+            index, query = future_to_query[future]
+            docs, summary = future.result()
+            results.append((index, query, docs, summary))
+
+    results.sort(key=lambda item: item[0])
+    for index, query, docs, summary in results:
         merged_docs = merge_retrieved_docs(merged_docs, docs)
         summary_parts.append(f"[Query {index}] {query}\n{summary}")
 
