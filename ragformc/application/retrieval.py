@@ -36,7 +36,6 @@ class Retriever:
 
 def merge_retrieved_docs(
     *doc_groups: list[RetrievedDoc],
-    *,
     top_k: int | None = None,
 ) -> list[RetrievedDoc]:
     merged: list[RetrievedDoc] = []

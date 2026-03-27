@@ -231,6 +231,7 @@ def test_graph_build_invokes_plugin_fetch_when_needed():
         rewriter=FakeRewriter(),
         retriever=retriever,
         answer_generator=FakeAnswerGenerator(),
+        multi_query_planner=FakeMultiQueryPlanner(False),
         plugin_decider=FakePluginDecisionMaker(True),
         top_k=settings.retrieval_top_k,
         answer_top_k=settings.answer_top_k,
@@ -261,6 +262,7 @@ def test_graph_build_skips_plugin_fetch_when_not_needed():
         rewriter=FakeRewriter(),
         retriever=retriever,
         answer_generator=FakeAnswerGenerator(),
+        multi_query_planner=FakeMultiQueryPlanner(False),
         plugin_decider=FakePluginDecisionMaker(False),
         top_k=settings.retrieval_top_k,
         answer_top_k=settings.answer_top_k,
@@ -279,6 +281,49 @@ def test_graph_build_skips_plugin_fetch_when_not_needed():
     assert len(state["citations"]) == 2
     assert state["need_plugins"] is False
     assert "server_plugins" not in state
+    assert isinstance(state["messages"][-1], AIMessage)
+
+
+def test_graph_build_runs_multi_query_rag_and_dedupes_docs():
+    settings = make_settings()
+    retriever = FakeMultiQueryRetriever()
+    graph_app = build_app(
+        rewriter=FakeRewriter(),
+        retriever=retriever,
+        answer_generator=FakeAnswerGenerator(),
+        multi_query_planner=FakeMultiQueryPlanner(
+            True,
+            queries=[
+                "variant-a question",
+                "variant-b question",
+                "variant-c question",
+            ],
+        ),
+        plugin_decider=FakePluginDecisionMaker(False),
+        top_k=settings.retrieval_top_k,
+        answer_top_k=settings.answer_top_k,
+        citation_preview_chars=settings.citation_preview_chars,
+    )
+
+    state = graph_app.invoke(
+        {
+            "messages": [HumanMessage(content="previous question")],
+            "origin_question": "ambiguous plugin question",
+        }
+    )
+
+    assert state["need_multi_query"] is True
+    assert state["multi_query_variants"] == [
+        "variant-a question",
+        "variant-b question",
+        "variant-c question",
+    ]
+    assert "variant-a question" in state["retrieval_summary"]
+    assert "variant-b question" in state["retrieval_summary"]
+    assert "variant-c question" in state["retrieval_summary"]
+    assert len(state["retrieved_docs"]) == 5
+    assert {doc.id for doc in state["retrieved_docs"]} == {1, 900, 901, 902, 903}
+    assert state["answer"] == "answer:rewritten: ambiguous plugin question"
     assert isinstance(state["messages"][-1], AIMessage)
 
 
