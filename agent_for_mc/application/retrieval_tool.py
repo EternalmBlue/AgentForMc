@@ -5,9 +5,9 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from typing import Final
 
-from ragformc.application.retrieval import merge_retrieved_docs
-from ragformc.application.retrieval import Retriever
-from ragformc.domain.models import RetrievedDoc
+from agent_for_mc.application.retrieval import merge_retrieved_docs
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.domain.models import RetrievedDoc
 
 
 @dataclass(slots=True)

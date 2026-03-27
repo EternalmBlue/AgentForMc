@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from langchain_core.messages import BaseMessage
 
-from ragformc.application.prompts import (
+from agent_for_mc.application.prompts import (
     ANSWER_SYSTEM_PROMPT,
     format_docs_for_prompt,
     format_history,
 )
-from ragformc.domain.models import AnswerResult, RetrievedDoc
-from ragformc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
+from agent_for_mc.infrastructure.clients import DeepSeekChatClient
 
 
 class AnswerGenerator:

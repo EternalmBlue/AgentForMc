@@ -4,8 +4,8 @@ import json
 
 from langchain_core.messages import BaseMessage
 
-from ragformc.application.prompts import format_history
-from ragformc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.application.prompts import format_history
+from agent_for_mc.infrastructure.clients import DeepSeekChatClient
 
 
 MULTI_QUERY_SYSTEM_PROMPT = """

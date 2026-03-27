@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 
-from ragformc.domain.models import RetrievedDoc
-from ragformc.infrastructure.clients import JinaEmbeddingClient
-from ragformc.infrastructure.vector_store import LancePluginVectorStore
+from agent_for_mc.domain.models import RetrievedDoc
+from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
+from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 
 
 WHITESPACE_RE = re.compile(r"\s+")

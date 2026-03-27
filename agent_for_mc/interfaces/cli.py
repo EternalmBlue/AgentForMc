@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from ragformc.application.chat_session import RagChatSession
-from ragformc.application.chains import build_rag_chain
-from ragformc.application.generation import AnswerGenerator
-from ragformc.application.multi_query import MultiQueryPlanner
-from ragformc.application.plugin_decision import PluginDecisionMaker
-from ragformc.application.retrieval import Retriever
-from ragformc.application.rewrite import QuestionRewriter
-from ragformc.domain.errors import ConfigurationError, RagForMcError, StartupValidationError
-from ragformc.domain.models import AnswerResult
-from ragformc.infrastructure.clients import DeepSeekChatClient, JinaEmbeddingClient
-from ragformc.infrastructure.config import Settings
-from ragformc.infrastructure.vector_store import LancePluginVectorStore
-from ragformc.interfaces.langgraph.build import build_app
+from agent_for_mc.application.chat_session import RagChatSession
+from agent_for_mc.application.chains import build_rag_chain
+from agent_for_mc.application.generation import AnswerGenerator
+from agent_for_mc.application.multi_query import MultiQueryPlanner
+from agent_for_mc.application.plugin_decision import PluginDecisionMaker
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.rewrite import QuestionRewriter
+from agent_for_mc.domain.errors import ConfigurationError, RagForMcError, StartupValidationError
+from agent_for_mc.domain.models import AnswerResult
+from agent_for_mc.infrastructure.clients import DeepSeekChatClient, JinaEmbeddingClient
+from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
+from agent_for_mc.interfaces.langgraph.build import build_app
 
 
 def build_session(settings: Settings) -> RagChatSession:

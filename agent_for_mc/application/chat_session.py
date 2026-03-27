@@ -5,12 +5,12 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from ragformc.application.generation import AnswerGenerator
-from ragformc.application.retrieval import Retriever
-from ragformc.application.rewrite import QuestionRewriter
-from ragformc.domain.models import AnswerResult
-from ragformc.infrastructure.config import Settings
-from ragformc.infrastructure.vector_store import LancePluginVectorStore
+from agent_for_mc.application.generation import AnswerGenerator
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.rewrite import QuestionRewriter
+from agent_for_mc.domain.models import AnswerResult
+from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 
 
 class RagChatSession:

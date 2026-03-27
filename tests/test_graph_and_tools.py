@@ -4,18 +4,18 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from ragformc.application.chains import build_rag_chain
-from ragformc.application.retrieval import Retriever
-from ragformc.domain.models import AnswerResult, RetrievedDoc
-from ragformc.infrastructure.config import Settings
-from ragformc.interfaces.langgraph.build import build_app
-from ragformc.interfaces.tools.retrieval import (
+from agent_for_mc.application.chains import build_rag_chain
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
+from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.interfaces.langgraph.build import build_app
+from agent_for_mc.interfaces.tools.retrieval import (
     RetrieveDocsToolContext,
     build_retrieve_docs_payload,
     configure_retrieve_docs_tool,
     retrieve_docs,
 )
-from ragformc.application.prompts import format_history
+from agent_for_mc.application.prompts import format_history
 
 
 class FakeVectorStore:

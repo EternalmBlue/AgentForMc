@@ -1,4 +1,4 @@
-from ragformc.interfaces.cli import main
+from agent_for_mc.interfaces.cli import main
 
 
 if __name__ == "__main__":

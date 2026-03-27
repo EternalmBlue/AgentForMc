@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from ragformc.domain.models import RetrievedDoc
+from agent_for_mc.domain.models import RetrievedDoc
 
 
 REWRITE_SYSTEM_PROMPT = """你是一个检索问句改写器。

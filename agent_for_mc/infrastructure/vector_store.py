@@ -6,8 +6,8 @@ from pathlib import Path
 import lancedb
 import pyarrow as pa
 
-from ragformc.domain.errors import StartupValidationError
-from ragformc.domain.models import RetrievedDoc, VectorStoreStats
+from agent_for_mc.domain.errors import StartupValidationError
+from agent_for_mc.domain.models import RetrievedDoc, VectorStoreStats
 
 
 REQUIRED_FIELDS = {

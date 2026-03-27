@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from langchain_core.messages import BaseMessage
 
-from ragformc.application.prompts import REWRITE_SYSTEM_PROMPT, format_history
-from ragformc.application.retrieval import normalize_question
-from ragformc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.application.prompts import REWRITE_SYSTEM_PROMPT, format_history
+from agent_for_mc.application.retrieval import normalize_question
+from agent_for_mc.infrastructure.clients import DeepSeekChatClient
 
 
 class QuestionRewriter:

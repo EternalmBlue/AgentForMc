@@ -4,8 +4,8 @@ from typing import Any
 
 import requests
 
-from ragformc.domain.errors import ConfigurationError, ServiceError
-from ragformc.infrastructure.config import Settings
+from agent_for_mc.domain.errors import ConfigurationError, ServiceError
+from agent_for_mc.infrastructure.config import Settings
 
 
 class JinaEmbeddingClient:

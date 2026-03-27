@@ -4,18 +4,18 @@ from typing import Any, cast
 
 from langchain_core.messages import AIMessage
 
-from ragformc.application.generation import AnswerGenerator
-from ragformc.application.multi_query import MultiQueryPlanner
-from ragformc.application.plugin_decision import PluginDecisionMaker
-from ragformc.application.retrieval import Retriever
-from ragformc.application.retrieval_tool import (
+from agent_for_mc.application.generation import AnswerGenerator
+from agent_for_mc.application.multi_query import MultiQueryPlanner
+from agent_for_mc.application.plugin_decision import PluginDecisionMaker
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.retrieval_tool import (
     RetrieveDocsToolContext,
     build_multi_query_retrieve_docs_payload,
     build_retrieve_docs_payload,
 )
-from ragformc.application.rewrite import QuestionRewriter
-from ragformc.application.state import RagGraphState
-from ragformc.interfaces.tools.server_plugins import get_server_plugins_list
+from agent_for_mc.application.rewrite import QuestionRewriter
+from agent_for_mc.application.state import RagGraphState
+from agent_for_mc.interfaces.tools.server_plugins import get_server_plugins_list
 
 
 def _merge_state(state: RagGraphState, **updates: Any) -> RagGraphState:

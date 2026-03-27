@@ -5,7 +5,7 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 
-from ragformc.domain.models import RetrievedDoc
+from agent_for_mc.domain.models import RetrievedDoc
 
 
 class RagGraphState(TypedDict, total=False):

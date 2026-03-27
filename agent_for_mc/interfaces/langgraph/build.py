@@ -4,13 +4,13 @@ from typing import cast
 
 from langgraph.graph import END, START, StateGraph
 
-from ragformc.application.generation import AnswerGenerator
-from ragformc.application.multi_query import MultiQueryPlanner
-from ragformc.application.plugin_decision import PluginDecisionMaker
-from ragformc.application.retrieval import Retriever
-from ragformc.application.rewrite import QuestionRewriter
-from ragformc.application.state import RagGraphState
-from ragformc.interfaces.langgraph.nodes import (
+from agent_for_mc.application.generation import AnswerGenerator
+from agent_for_mc.application.multi_query import MultiQueryPlanner
+from agent_for_mc.application.plugin_decision import PluginDecisionMaker
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.rewrite import QuestionRewriter
+from agent_for_mc.application.state import RagGraphState
+from agent_for_mc.interfaces.langgraph.nodes import (
     build_answer_node,
     build_decide_multi_query_node,
     build_decide_plugins_node,
@@ -21,7 +21,7 @@ from ragformc.interfaces.langgraph.nodes import (
     route_after_multi_query_decision,
     route_after_plugin_decision,
 )
-from ragformc.interfaces.tools.retrieval import (
+from agent_for_mc.interfaces.tools.retrieval import (
     RetrieveDocsToolContext,
     configure_retrieve_docs_tool,
 )

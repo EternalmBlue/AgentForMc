@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from ragformc.application.retrieval_tool import (
+from agent_for_mc.application.retrieval_tool import (
     RetrieveDocsToolContext,
     build_retrieve_docs_payload,
     configure_retrieve_docs_tool,

@@ -5,14 +5,14 @@ from typing import Any, cast
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from ragformc.application.generation import AnswerGenerator
-from ragformc.application.retrieval import Retriever
-from ragformc.application.retrieval_tool import (
+from agent_for_mc.application.generation import AnswerGenerator
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.retrieval_tool import (
     RetrieveDocsToolContext,
     build_retrieve_docs_payload,
 )
-from ragformc.application.rewrite import QuestionRewriter
-from ragformc.application.state import RagGraphState
+from agent_for_mc.application.rewrite import QuestionRewriter
+from agent_for_mc.application.state import RagGraphState
 
 
 def _merge_state(state: RagGraphState, **updates: Any) -> RagGraphState:

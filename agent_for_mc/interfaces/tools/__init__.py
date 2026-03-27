@@ -1,4 +1,4 @@
-from ragformc.interfaces.tools.retrieval import (
+from agent_for_mc.interfaces.tools.retrieval import (
     RetrieveDocsToolContext,
     build_retrieve_docs_payload,
     configure_retrieve_docs_tool,
