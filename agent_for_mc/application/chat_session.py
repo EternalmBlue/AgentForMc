@@ -8,10 +8,9 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from agent_for_mc.application.deepagent_state import (
     clear_turn_context,
     consume_turn_context,
-    record_rewritten_question,
+    record_standalone_query,
     start_turn_context,
 )
-from agent_for_mc.application.retrieval import normalize_question
 from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.domain.models import AnswerResult
 from agent_for_mc.infrastructure.config import Settings
@@ -40,10 +39,10 @@ class RagChatSession:
 
     def ask(self, question: str) -> AnswerResult:
         history = list(self._history)
-        rewritten_question = normalize_question(question)
+        standalone_query = question.strip()
 
         start_turn_context()
-        record_rewritten_question(rewritten_question)
+        record_standalone_query(standalone_query)
         try:
             state = self._deep_agent.invoke(
                 {
@@ -62,8 +61,8 @@ class RagChatSession:
             result = AnswerResult(
                 answer=answer_text,
                 citations=citations,
-                rewritten_question=(
-                    turn.rewritten_question if turn and turn.rewritten_question else rewritten_question
+                standalone_query=(
+                    turn.standalone_query if turn and turn.standalone_query else standalone_query
                 ),
             )
         except Exception as exc:

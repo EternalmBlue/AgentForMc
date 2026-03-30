@@ -8,9 +8,17 @@ from agent_for_mc.domain.models import RetrievedDoc
 
 @dataclass(slots=True)
 class DeepAgentTurnContext:
-    rewritten_question: str = ""
+    standalone_query: str = ""
     retrieved_docs: list[RetrievedDoc] = field(default_factory=list)
     server_plugins: list[str] = field(default_factory=list)
+
+    @property
+    def rewritten_question(self) -> str:
+        return self.standalone_query
+
+    @rewritten_question.setter
+    def rewritten_question(self, value: str) -> None:
+        self.standalone_query = value
 
 
 _TURN_CONTEXT: ContextVar[DeepAgentTurnContext | None] = ContextVar(
@@ -29,15 +37,23 @@ def consume_turn_context() -> DeepAgentTurnContext | None:
     return context
 
 
+def get_turn_context() -> DeepAgentTurnContext | None:
+    return _TURN_CONTEXT.get()
+
+
 def clear_turn_context() -> None:
     _TURN_CONTEXT.set(None)
 
 
-def record_rewritten_question(question: str) -> None:
+def record_standalone_query(query: str) -> None:
     context = _TURN_CONTEXT.get()
     if context is None:
         return
-    context.rewritten_question = question
+    context.standalone_query = query
+
+
+def record_rewritten_question(question: str) -> None:
+    record_standalone_query(question)
 
 
 def record_retrieved_docs(docs: list[RetrievedDoc]) -> None:

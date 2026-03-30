@@ -88,9 +88,9 @@ class LancePluginVectorStore:
         )
         return self._stats
 
-    def find_name_matches(self, question: str) -> list[RetrievedDoc]:
+    def find_name_matches(self, search_query: str) -> list[RetrievedDoc]:
         self.validate()
-        normalized_question = question.lower()
+        normalized_search_query = search_query.lower()
         matches: list[_NameMatch] = []
 
         for row in self._rows or []:
@@ -98,9 +98,9 @@ class LancePluginVectorStore:
             chinese_name = str(row.get("plugin_chinese_name") or "").strip()
             english_name = str(row.get("plugin_english_name") or "").strip()
 
-            if chinese_name and chinese_name in question:
+            if chinese_name and chinese_name in search_query:
                 best_name_length = max(best_name_length, len(chinese_name))
-            if english_name and english_name.lower() in normalized_question:
+            if english_name and english_name.lower() in normalized_search_query:
                 best_name_length = max(best_name_length, len(english_name))
 
             if best_name_length > 0:

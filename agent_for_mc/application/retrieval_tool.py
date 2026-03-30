@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from typing import Final
 
+from agent_for_mc.application.deepagent_state import record_retrieved_docs
 from agent_for_mc.application.retrieval import merge_retrieved_docs
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import RetrievedDoc
@@ -35,20 +36,24 @@ def get_retrieve_docs_tool_context() -> RetrieveDocsToolContext:
 
 
 def build_retrieve_docs_payload(
-    query: str,
+    search_query: str,
     *,
     context: RetrieveDocsToolContext,
 ) -> tuple[list[RetrievedDoc], str]:
-    docs = context.retriever.retrieve(query, top_k=context.top_k)
-    return docs, _format_docs_for_tool(docs, preview_chars=context.citation_preview_chars)
+    docs = context.retriever.retrieve(search_query, top_k=context.top_k)
+    record_retrieved_docs(docs)
+    return docs, format_docs_for_tool(
+        docs,
+        preview_chars=context.citation_preview_chars,
+    )
 
 
 def build_multi_query_retrieve_docs_payload(
-    queries: list[str],
+    search_queries: list[str],
     *,
     context: RetrieveDocsToolContext,
 ) -> tuple[list[RetrievedDoc], str]:
-    normalized_queries = [query.strip() for query in queries if query and query.strip()]
+    normalized_queries = [query.strip() for query in search_queries if query and query.strip()]
     if not normalized_queries:
         return [], "No matching documents were found."
 
@@ -80,10 +85,11 @@ def build_multi_query_retrieve_docs_payload(
     if not summary_parts:
         return [], "No matching documents were found."
 
+    record_retrieved_docs(merged_docs)
     return merged_docs, "\n\n".join(summary_parts)
 
 
-def _format_docs_for_tool(
+def format_docs_for_tool(
     docs: list[RetrievedDoc],
     *,
     preview_chars: int,

@@ -18,7 +18,15 @@ class RetrievedDoc:
 class AnswerResult:
     answer: str
     citations: list[RetrievedDoc] = field(default_factory=list)
-    rewritten_question: str = ""
+    standalone_query: str = ""
+
+    @property
+    def rewritten_question(self) -> str:
+        return self.standalone_query
+
+    @rewritten_question.setter
+    def rewritten_question(self, value: str) -> None:
+        self.standalone_query = value
 
 
 @dataclass(slots=True)

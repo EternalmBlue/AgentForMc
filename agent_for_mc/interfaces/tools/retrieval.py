@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from agent_for_mc.application.deepagent_state import record_retrieved_docs
 from agent_for_mc.application.retrieval_tool import (
     RetrieveDocsToolContext,
     build_retrieve_docs_payload,
@@ -12,11 +11,11 @@ from agent_for_mc.application.retrieval_tool import (
 
 
 @tool("retrieve_docs")
-def retrieve_docs(query: str) -> str:
+def retrieve_docs(search_query: str | None = None, query: str | None = None) -> str:
     """Retrieve the most relevant docs for a query and format them for an agent."""
+    effective_search_query = search_query or query or ""
     docs, formatted_docs = build_retrieve_docs_payload(
-        query,
+        effective_search_query,
         context=get_retrieve_docs_tool_context(),
     )
-    record_retrieved_docs(docs)
     return formatted_docs

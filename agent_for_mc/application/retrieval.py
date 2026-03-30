@@ -10,8 +10,8 @@ from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 WHITESPACE_RE = re.compile(r"\s+")
 
 
-def normalize_question(question: str) -> str:
-    return WHITESPACE_RE.sub(" ", question).strip()
+def normalize_search_query(search_query: str) -> str:
+    return WHITESPACE_RE.sub(" ", search_query).strip()
 
 
 class Retriever:
@@ -23,10 +23,10 @@ class Retriever:
         self._vector_store = vector_store
         self._embedding_client = embedding_client
 
-    def retrieve(self, question: str, *, top_k: int = 8) -> list[RetrievedDoc]:
-        normalized_question = normalize_question(question)
-        boosted_docs = self._vector_store.find_name_matches(normalized_question)
-        query_embedding = self._embedding_client.embed_query(normalized_question)
+    def retrieve(self, search_query: str, *, top_k: int = 8) -> list[RetrievedDoc]:
+        normalized_search_query = normalize_search_query(search_query)
+        boosted_docs = self._vector_store.find_name_matches(normalized_search_query)
+        query_embedding = self._embedding_client.embed_query(normalized_search_query)
         vector_docs = self._vector_store.search_by_embedding(
             query_embedding,
             top_k=top_k,
