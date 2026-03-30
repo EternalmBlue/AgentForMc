@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from dataclasses import replace
 from pathlib import Path
 import json
 
@@ -15,6 +17,7 @@ from agent_for_mc.application.prompts import format_history
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
 from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.interfaces import cli as cli_module
 from agent_for_mc.interfaces.deepagent.build import build_deep_agent
 from agent_for_mc.interfaces.tools.multi_query import multi_query_retrieve_docs
 from agent_for_mc.interfaces.tools.multi_query_rag import (
@@ -383,6 +386,9 @@ def make_settings() -> Settings:
         answer_top_k=2,
         citation_preview_chars=40,
         request_timeout_seconds=5,
+        model_cache_dir=Path(".cache/models"),
+        reranker_enabled=False,
+        reranker_model_name_or_path="maidalun1020/bce-reranker-base_v1",
     )
 
 
@@ -396,6 +402,61 @@ def test_format_history_uses_base_messages():
 
     assert "第1轮用户问题：how to use plugin?" in text
     assert "第1轮助手回答：use the config file" in text
+
+
+def test_settings_from_env_loads_dotenv_and_config(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    config_path = tmp_path / "config.toml"
+    env_file.write_text(
+        r"""
+RAG_CONFIG_TOML=.\config.toml
+RAG_MODEL_CACHE_DIR=.\.cache\models
+RAG_LANCE_DB_DIR=.\data\plugins_vector_db
+RAG_JINA_API_KEY=test-jina-key
+RAG_DEEPSEEK_API_KEY=test-deepseek-key
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        """
+[paths]
+lance_db_dir = "data/plugins_vector_db"
+model_cache_dir = ".cache/models"
+
+[vector_store]
+lance_table_name = "plugins_docs"
+expected_embedding_dimension = 1024
+rewrite_history_turns = 4
+retrieval_top_k = 8
+answer_top_k = 4
+citation_preview_chars = 200
+
+[reranker]
+enabled = true
+model_name_or_path = "maidalun1020/bce-reranker-base_v1"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
+    monkeypatch.delenv("RAG_CONFIG_TOML", raising=False)
+    monkeypatch.delenv("RAG_MODEL_CACHE_DIR", raising=False)
+    monkeypatch.delenv("RAG_LANCE_DB_DIR", raising=False)
+    monkeypatch.delenv("RAG_JINA_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.lance_db_dir == (tmp_path / "data/plugins_vector_db").resolve()
+    assert settings.model_cache_dir == (tmp_path / ".cache/models").resolve()
+    assert settings.jina_api_key == "test-jina-key"
+    assert settings.deepseek_api_key == "test-deepseek-key"
+    assert settings.reranker_enabled is True
+    assert settings.reranker_model_name_or_path == "maidalun1020/bce-reranker-base_v1"
+    assert os.environ["HF_HOME"] == str(settings.model_cache_dir)
+    assert os.environ["TRANSFORMERS_CACHE"] == str(
+        settings.model_cache_dir / "transformers"
+    )
 
 
 def test_retrieve_docs_tool_formats_output():
@@ -413,6 +474,52 @@ def test_retrieve_docs_tool_formats_output():
     assert "PluginA" in output
     assert "PluginB" in output
     assert "distance=" in output
+
+
+class FakeReranker:
+    def __init__(self):
+        self.last_query = ""
+        self.last_docs: list[RetrievedDoc] = []
+
+    def rerank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
+        self.last_query = query
+        self.last_docs = list(docs)
+        return list(reversed(docs))
+
+
+def test_retriever_uses_reranker_when_configured():
+    reranker = FakeReranker()
+    retriever = Retriever(
+        FakeVectorStore(),
+        FakeEmbeddingClient(),
+        reranker=reranker,
+    )
+
+    docs = retriever.retrieve("plugin", top_k=2)
+
+    assert [doc.id for doc in docs] == [2, 1]
+    assert reranker.last_query == "plugin"
+    assert [doc.id for doc in reranker.last_docs] == [1, 2]
+
+
+def test_build_session_warmups_reranker(monkeypatch):
+    warmed: list[str] = []
+
+    class FakeBceReranker:
+        def __init__(self, model_name_or_path: str):
+            self.model_name_or_path = model_name_or_path
+
+        def warmup(self) -> None:
+            warmed.append(self.model_name_or_path)
+
+    monkeypatch.setattr(cli_module, "BceReranker", FakeBceReranker)
+
+    settings = replace(make_settings(), reranker_enabled=True)
+
+    session = cli_module.build_session(settings)
+
+    assert isinstance(session, RagChatSession)
+    assert warmed == ["maidalun1020/bce-reranker-base_v1"]
 
 
 def test_payload_helper_returns_docs_and_summary():

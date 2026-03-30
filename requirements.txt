@@ -1,6 +1,8 @@
 lancedb==0.29.2
 pyarrow==23.0.1
 requests==2.32.5
+tomli==2.2.1
+BCEmbedding==0.1.5
 langchain-core==1.2.22
 deepagents==0.4.12
 langchain-deepseek==1.0.1

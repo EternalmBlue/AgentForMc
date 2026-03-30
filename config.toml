@@ -1,0 +1,24 @@
+[paths]
+lance_db_dir = "data/plugins_vector_db"
+model_cache_dir = ".cache/models"
+
+[vector_store]
+lance_table_name = "plugins_docs"
+expected_embedding_dimension = 1024
+rewrite_history_turns = 4
+retrieval_top_k = 8
+answer_top_k = 4
+citation_preview_chars = 200
+
+[jina]
+embeddings_url = "https://api.jina.ai/v1/embeddings"
+embeddings_model = "jina-embeddings-v5-text-small"
+embeddings_task = "retrieval.query"
+
+[deepseek]
+model = "deepseek-chat"
+chat_url = "https://api.deepseek.com/chat/completions"
+
+[reranker]
+enabled = false
+model_name_or_path = "maidalun1020/bce-reranker-base_v1"
