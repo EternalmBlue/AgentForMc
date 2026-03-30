@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from collections import deque
-from uuid import uuid4
+from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from agent_for_mc.application.generation import AnswerGenerator
-from agent_for_mc.application.retrieval import Retriever
-from agent_for_mc.application.rewrite import QuestionRewriter
+from agent_for_mc.application.deepagent_state import (
+    clear_turn_context,
+    consume_turn_context,
+    record_rewritten_question,
+    start_turn_context,
+)
+from agent_for_mc.application.retrieval import normalize_question
+from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.domain.models import AnswerResult
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
@@ -18,19 +23,11 @@ class RagChatSession:
         self,
         settings: Settings,
         vector_store: LancePluginVectorStore,
-        rewriter: QuestionRewriter,
-        retriever: Retriever,
-        answer_generator: AnswerGenerator,
-        rag_chain=None,
-        graph_app=None,
+        deep_agent: Any,
     ):
         self._settings = settings
         self._vector_store = vector_store
-        self._rewriter = rewriter
-        self._retriever = retriever
-        self._answer_generator = answer_generator
-        self._rag_chain = rag_chain
-        self._graph_app = graph_app
+        self._deep_agent = deep_agent
         self._history: deque[BaseMessage] = deque(
             maxlen=settings.rewrite_history_turns * 2
         )
@@ -41,55 +38,62 @@ class RagChatSession:
     def clear_history(self) -> None:
         self._history.clear()
 
-    def rewrite_question(self, history: list[BaseMessage], question: str) -> str:
-        return self._rewriter.rewrite_question(history, question)
-
-    def retrieve(self, question: str, top_k: int = 8):
-        return self._retriever.retrieve(question, top_k=top_k)
-
-    def answer(
-        self,
-        history: list[BaseMessage],
-        question: str,
-        rewritten_question: str,
-        docs,
-    ) -> AnswerResult:
-        return self._answer_generator.answer(history, question, rewritten_question, docs)
-
     def ask(self, question: str) -> AnswerResult:
         history = list(self._history)
-        if self._graph_app is not None:
-            state = self._graph_app.invoke(
+        rewritten_question = normalize_question(question)
+
+        start_turn_context()
+        record_rewritten_question(rewritten_question)
+        try:
+            state = self._deep_agent.invoke(
                 {
-                    "uuid": uuid4().hex,
-                    "messages": history,
-                    "origin_question": question,
-                    "retry_count": 0,
+                    "messages": [
+                        *history,
+                        HumanMessage(content=question),
+                    ]
                 }
             )
+            answer_text = _extract_agent_answer(state)
+            if not answer_text:
+                raise ServiceError("DeepAgent 返回了空回答。")
+
+            turn = consume_turn_context()
+            citations = list(turn.retrieved_docs if turn else [])
             result = AnswerResult(
-                answer=str(state.get("answer", "")),
-                citations=list(state.get("citations", [])),
-                rewritten_question=str(state.get("rewritten_question", "")),
+                answer=answer_text,
+                citations=citations,
+                rewritten_question=(
+                    turn.rewritten_question if turn and turn.rewritten_question else rewritten_question
+                ),
             )
-        elif self._rag_chain is not None:
-            state = self._rag_chain.invoke(
-                {
-                    "messages": history,
-                    "origin_question": question,
-                }
-            )
-            result = AnswerResult(
-                answer=str(state.get("answer", "")),
-                citations=list(state.get("citations", [])),
-                rewritten_question=str(state.get("rewritten_question", "")),
-            )
-        else:
-            rewritten_question = self.rewrite_question(history, question)
-            docs = self.retrieve(rewritten_question, top_k=self._settings.retrieval_top_k)
-            selected_docs = docs[: self._settings.answer_top_k]
-            result = self.answer(history, question, rewritten_question, selected_docs)
+        except Exception as exc:
+            raise ServiceError(f"DeepAgent 调用失败: {exc}") from exc
+        finally:
+            clear_turn_context()
 
         self._history.append(HumanMessage(content=question))
         self._history.append(AIMessage(content=result.answer))
         return result
+
+
+def _extract_agent_answer(state: object) -> str:
+    if isinstance(state, str):
+        return state.strip()
+
+    if isinstance(state, dict):
+        messages = state.get("messages")
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if isinstance(message, AIMessage):
+                    content = str(message.content).strip()
+                    if content:
+                        return content
+                content = getattr(message, "content", None)
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+
+        output = state.get("output")
+        if isinstance(output, str):
+            return output.strip()
+
+    return ""

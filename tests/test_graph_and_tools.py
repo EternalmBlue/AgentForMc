@@ -4,18 +4,19 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agent_for_mc.application.chains import build_rag_chain
+from agent_for_mc.application.chat_session import RagChatSession
+from agent_for_mc.application.deepagent_state import record_retrieved_docs
+from agent_for_mc.application.prompts import format_history
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
 from agent_for_mc.infrastructure.config import Settings
-from agent_for_mc.interfaces.langgraph.build import build_app
+from agent_for_mc.interfaces.deepagent.build import build_deep_agent
 from agent_for_mc.interfaces.tools.retrieval import (
     RetrieveDocsToolContext,
     build_retrieve_docs_payload,
     configure_retrieve_docs_tool,
     retrieve_docs,
 )
-from agent_for_mc.application.prompts import format_history
 
 
 class FakeVectorStore:
@@ -49,113 +50,21 @@ class FakeEmbeddingClient:
         return [0.0, 1.0]
 
 
-class FakeRewriter:
-    def rewrite_question(self, history, question: str):
-        return f"rewritten: {question}"
-
-
-class FakeMultiQueryPlanner:
-    def __init__(self, need_multi_query: bool, queries=None):
-        self._need_multi_query = need_multi_query
-        self._queries = list(queries or [])
-
-    def decide_and_generate_queries(
-        self,
-        history,
-        question: str,
-        rewritten_question: str,
-        retrieval_summary: str,
-    ):
-        return self._need_multi_query, list(self._queries)
-
-
-class FakePluginDecisionMaker:
-    def __init__(self, need_plugins: bool):
-        self._need_plugins = need_plugins
-
-    def decide_need_plugins(
-        self,
-        history,
-        question: str,
-        rewritten_question: str,
-        retrieval_summary: str,
-    ) -> bool:
-        return self._need_plugins
-
-
-class FakeAnswerGenerator:
-    def answer(
-        self,
-        history,
-        question,
-        rewritten_question: str,
-        docs,
-        server_plugins=None,
-    ):
-        return AnswerResult(
-            answer=f"answer:{rewritten_question}",
-            citations=list(docs),
-            rewritten_question=rewritten_question,
+class FakeDeepAgent:
+    def invoke(self, payload):
+        record_retrieved_docs(
+            [
+                RetrievedDoc(
+                    id=777,
+                    plugin_chinese_name="深度代理插件",
+                    plugin_english_name="DeepAgentPlugin",
+                    content="deep agent content",
+                    distance=0.01,
+                    match_reason="deep-agent",
+                )
+            ]
         )
-
-
-class FakeMultiQueryRetriever:
-    def retrieve(self, question: str, *, top_k: int = 8):
-        question_lower = question.lower()
-        shared = RetrievedDoc(
-            id=900,
-            plugin_chinese_name="共享插件",
-            plugin_english_name="SharedPlugin",
-            content=f"shared content for {question}",
-            distance=0.3,
-            match_reason="shared",
-        )
-        if "variant-a" in question_lower:
-            return [
-                RetrievedDoc(
-                    id=901,
-                    plugin_chinese_name="变体A",
-                    plugin_english_name="VariantA",
-                    content="variant A content",
-                    distance=0.1,
-                    match_reason="variant-a",
-                ),
-                shared,
-            ]
-        if "variant-b" in question_lower:
-            return [
-                RetrievedDoc(
-                    id=902,
-                    plugin_chinese_name="变体B",
-                    plugin_english_name="VariantB",
-                    content="variant B content",
-                    distance=0.2,
-                    match_reason="variant-b",
-                ),
-                shared,
-            ]
-        if "variant-c" in question_lower:
-            return [
-                RetrievedDoc(
-                    id=903,
-                    plugin_chinese_name="变体C",
-                    plugin_english_name="VariantC",
-                    content="variant C content",
-                    distance=0.25,
-                    match_reason="variant-c",
-                ),
-                shared,
-            ]
-        return [
-            RetrievedDoc(
-                id=1,
-                plugin_chinese_name="基础插件",
-                plugin_english_name="BasePlugin",
-                content="base content",
-                distance=0.05,
-                match_reason="base",
-            ),
-        ]
+        return {"messages": [AIMessage(content="deep answer")]}
 
 
 def make_settings() -> Settings:
@@ -168,7 +77,7 @@ def make_settings() -> Settings:
         jina_embeddings_task="retrieval.query",
         deepseek_api_key="test",
         deepseek_model="test-model",
-        deepseek_chat_url="https://example.com/deepseek",
+        deepseek_chat_url="https://api.deepseek.com/chat/completions",
         expected_embedding_dimension=2,
         rewrite_history_turns=4,
         retrieval_top_k=2,
@@ -223,131 +132,29 @@ def test_payload_helper_returns_docs_and_summary():
     assert "PluginA" in summary
 
 
-def test_graph_build_invokes_plugin_fetch_when_needed():
+def test_build_deep_agent_creates_agent_graph():
+    settings = make_settings()
+    retriever = Retriever(FakeVectorStore(), FakeEmbeddingClient())
+
+    agent = build_deep_agent(settings=settings, retriever=retriever)
+
+    assert agent is not None
+    assert hasattr(agent, "invoke")
+
+
+def test_rag_chat_session_uses_deep_agent():
     settings = make_settings()
     vector_store = FakeVectorStore()
-    retriever = Retriever(vector_store, FakeEmbeddingClient())
-    graph_app = build_app(
-        rewriter=FakeRewriter(),
-        retriever=retriever,
-        answer_generator=FakeAnswerGenerator(),
-        multi_query_planner=FakeMultiQueryPlanner(False),
-        plugin_decider=FakePluginDecisionMaker(True),
-        top_k=settings.retrieval_top_k,
-        answer_top_k=settings.answer_top_k,
-        citation_preview_chars=settings.citation_preview_chars,
+    session = RagChatSession(
+        settings=settings,
+        vector_store=vector_store,
+        deep_agent=FakeDeepAgent(),
     )
 
-    state = graph_app.invoke(
-        {
-            "messages": [HumanMessage(content="previous question")],
-            "origin_question": "plugin question",
-        }
-    )
+    result = session.ask("plugin question")
 
-    assert state["rewritten_question"] == "rewritten: plugin question"
-    assert state["answer"] == "answer:rewritten: plugin question"
-    assert len(state["citations"]) == 2
-    assert state["server_plugins"] == ["authme", "viaversion"]
-    assert state["need_plugins"] is True
-    assert state["retrieval_summary"]
-    assert isinstance(state["messages"][-1], AIMessage)
-
-
-def test_graph_build_skips_plugin_fetch_when_not_needed():
-    settings = make_settings()
-    vector_store = FakeVectorStore()
-    retriever = Retriever(vector_store, FakeEmbeddingClient())
-    graph_app = build_app(
-        rewriter=FakeRewriter(),
-        retriever=retriever,
-        answer_generator=FakeAnswerGenerator(),
-        multi_query_planner=FakeMultiQueryPlanner(False),
-        plugin_decider=FakePluginDecisionMaker(False),
-        top_k=settings.retrieval_top_k,
-        answer_top_k=settings.answer_top_k,
-        citation_preview_chars=settings.citation_preview_chars,
-    )
-
-    state = graph_app.invoke(
-        {
-            "messages": [HumanMessage(content="previous question")],
-            "origin_question": "plugin question",
-        }
-    )
-
-    assert state["rewritten_question"] == "rewritten: plugin question"
-    assert state["answer"] == "answer:rewritten: plugin question"
-    assert len(state["citations"]) == 2
-    assert state["need_plugins"] is False
-    assert "server_plugins" not in state
-    assert isinstance(state["messages"][-1], AIMessage)
-
-
-def test_graph_build_runs_multi_query_rag_and_dedupes_docs():
-    settings = make_settings()
-    retriever = FakeMultiQueryRetriever()
-    graph_app = build_app(
-        rewriter=FakeRewriter(),
-        retriever=retriever,
-        answer_generator=FakeAnswerGenerator(),
-        multi_query_planner=FakeMultiQueryPlanner(
-            True,
-            queries=[
-                "variant-a question",
-                "variant-b question",
-                "variant-c question",
-            ],
-        ),
-        plugin_decider=FakePluginDecisionMaker(False),
-        top_k=settings.retrieval_top_k,
-        answer_top_k=settings.answer_top_k,
-        citation_preview_chars=settings.citation_preview_chars,
-    )
-
-    state = graph_app.invoke(
-        {
-            "messages": [HumanMessage(content="previous question")],
-            "origin_question": "ambiguous plugin question",
-        }
-    )
-
-    assert state["need_multi_query"] is True
-    assert state["multi_query_variants"] == [
-        "variant-a question",
-        "variant-b question",
-        "variant-c question",
-    ]
-    assert "variant-a question" in state["retrieval_summary"]
-    assert "variant-b question" in state["retrieval_summary"]
-    assert "variant-c question" in state["retrieval_summary"]
-    assert len(state["retrieved_docs"]) == 5
-    assert {doc.id for doc in state["retrieved_docs"]} == {1, 900, 901, 902, 903}
-    assert state["answer"] == "answer:rewritten: ambiguous plugin question"
-    assert isinstance(state["messages"][-1], AIMessage)
-
-
-def test_rag_chain_runs_end_to_end():
-    settings = make_settings()
-    vector_store = FakeVectorStore()
-    retriever = Retriever(vector_store, FakeEmbeddingClient())
-    chain = build_rag_chain(
-        rewriter=FakeRewriter(),
-        retriever=retriever,
-        answer_generator=FakeAnswerGenerator(),
-        top_k=settings.retrieval_top_k,
-        answer_top_k=settings.answer_top_k,
-        citation_preview_chars=settings.citation_preview_chars,
-    )
-
-    state = chain.invoke(
-        {
-            "messages": [HumanMessage(content="previous question")],
-            "origin_question": "plugin question",
-        }
-    )
-
-    assert state["rewritten_question"] == "rewritten: plugin question"
-    assert state["answer"] == "answer:rewritten: plugin question"
-    assert len(state["citations"]) == 2
-    assert isinstance(state["messages"][-1], AIMessage)
+    assert isinstance(result, AnswerResult)
+    assert result.answer == "deep answer"
+    assert result.rewritten_question == "plugin question"
+    assert [doc.id for doc in result.citations] == [777]
+    assert isinstance(session._history[-1], AIMessage)

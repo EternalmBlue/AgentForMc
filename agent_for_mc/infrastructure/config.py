@@ -42,6 +42,12 @@ class Settings:
     citation_preview_chars: int
     request_timeout_seconds: int
 
+    @property
+    def deepseek_api_base(self) -> str:
+        if self.deepseek_chat_url.endswith("/chat/completions"):
+            return self.deepseek_chat_url[: -len("/chat/completions")] + "/v1"
+        return self.deepseek_chat_url.rstrip("/")
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(

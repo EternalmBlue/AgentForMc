@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 from agent_for_mc.application.chat_session import RagChatSession
-from agent_for_mc.application.chains import build_rag_chain
-from agent_for_mc.application.generation import AnswerGenerator
-from agent_for_mc.application.multi_query import MultiQueryPlanner
-from agent_for_mc.application.plugin_decision import PluginDecisionMaker
-from agent_for_mc.application.retrieval import Retriever
-from agent_for_mc.application.rewrite import QuestionRewriter
 from agent_for_mc.domain.errors import ConfigurationError, RagForMcError, StartupValidationError
 from agent_for_mc.domain.models import AnswerResult
-from agent_for_mc.infrastructure.clients import DeepSeekChatClient, JinaEmbeddingClient
+from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
-from agent_for_mc.interfaces.langgraph.build import build_app
+from agent_for_mc.interfaces.deepagent.build import build_deep_agent
+from agent_for_mc.application.retrieval import Retriever
 
 
 def build_session(settings: Settings) -> RagChatSession:
@@ -21,39 +16,16 @@ def build_session(settings: Settings) -> RagChatSession:
         settings.lance_table_name,
         expected_embedding_dimension=settings.expected_embedding_dimension,
     )
-    deepseek_client = DeepSeekChatClient(settings)
     embedding_client = JinaEmbeddingClient(settings)
-    rewriter = QuestionRewriter(deepseek_client)
     retriever = Retriever(vector_store, embedding_client)
-    answer_generator = AnswerGenerator(deepseek_client)
-    multi_query_planner = MultiQueryPlanner(deepseek_client)
-    plugin_decider = PluginDecisionMaker(deepseek_client)
-    rag_chain = build_rag_chain(
-        rewriter=rewriter,
+    deep_agent = build_deep_agent(
+        settings=settings,
         retriever=retriever,
-        answer_generator=answer_generator,
-        top_k=settings.retrieval_top_k,
-        answer_top_k=settings.answer_top_k,
-        citation_preview_chars=settings.citation_preview_chars,
-    )
-    graph_app = build_app(
-        rewriter=rewriter,
-        retriever=retriever,
-        answer_generator=answer_generator,
-        multi_query_planner=multi_query_planner,
-        plugin_decider=plugin_decider,
-        top_k=settings.retrieval_top_k,
-        answer_top_k=settings.answer_top_k,
-        citation_preview_chars=settings.citation_preview_chars,
     )
     return RagChatSession(
         settings=settings,
         vector_store=vector_store,
-        rewriter=rewriter,
-        retriever=retriever,
-        answer_generator=answer_generator,
-        rag_chain=rag_chain,
-        graph_app=graph_app,
+        deep_agent=deep_agent,
     )
 
 
@@ -68,7 +40,7 @@ def main() -> int:
         print(f"[startup error] {exc}")
         return 1
 
-    print("RagForMc local RAG CLI")
+    print("DeepAgent local RAG CLI")
     print(
         "Vector DB: "
         f"table={stats.table_name}, records={stats.record_count}, "
