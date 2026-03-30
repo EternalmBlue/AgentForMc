@@ -5,7 +5,7 @@ from agent_for_mc.domain.errors import ConfigurationError, RagForMcError, Startu
 from agent_for_mc.domain.models import AnswerResult
 from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
 from agent_for_mc.infrastructure.config import Settings
-from agent_for_mc.infrastructure.reranker import BceReranker
+from agent_for_mc.infrastructure.ranker import BceRanker
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 from agent_for_mc.interfaces.deepagent.build import build_deep_agent
 from agent_for_mc.application.retrieval import Retriever
@@ -18,14 +18,14 @@ def build_session(settings: Settings) -> RagChatSession:
         expected_embedding_dimension=settings.expected_embedding_dimension,
     )
     embedding_client = JinaEmbeddingClient(settings)
-    reranker = (
-        BceReranker(settings.reranker_model_name_or_path)
+    ranker = (
+        BceRanker(settings.reranker_model_name_or_path)
         if settings.reranker_enabled
         else None
     )
-    if reranker is not None:
-        reranker.warmup()
-    retriever = Retriever(vector_store, embedding_client, reranker=reranker)
+    if ranker is not None:
+        ranker.warmup()
+    retriever = Retriever(vector_store, embedding_client, ranker=ranker)
     deep_agent = build_deep_agent(
         settings=settings,
         retriever=retriever,

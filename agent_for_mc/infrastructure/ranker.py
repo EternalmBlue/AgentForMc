@@ -8,12 +8,12 @@ from agent_for_mc.domain.models import RetrievedDoc
 
 
 @dataclass(slots=True)
-class BceReranker:
+class BceRanker:
     model_name_or_path: str
     _model: Any | None = None
 
     def warmup(self) -> None:
-        """Load the underlying reranker model eagerly."""
+        """Load the underlying ranker model eagerly."""
         self._get_model()
 
     def compute_scores(self, query: str, passages: list[str]) -> list[float]:
@@ -24,17 +24,17 @@ class BceReranker:
         try:
             scores = model.compute_score(sentence_pairs)
         except Exception as exc:  # pragma: no cover - external model failure
-            raise ServiceError(f"BCE reranker 评分失败: {exc}") from exc
+            raise ServiceError(f"BCE ranker 评分失败: {exc}") from exc
         return [float(score) for score in scores]
 
-    def rerank(self, query: str, passages: list[str]) -> list[str]:
+    def rank(self, query: str, passages: list[str]) -> list[str]:
         if not passages:
             return []
         model = self._get_model()
         try:
             results = model.rerank(query, passages)
         except Exception as exc:  # pragma: no cover - external model failure
-            raise ServiceError(f"BCE reranker 排序失败: {exc}") from exc
+            raise ServiceError(f"BCE ranker 排序失败: {exc}") from exc
 
         if isinstance(results, list):
             ordered_passages: list[str] = []
@@ -48,7 +48,7 @@ class BceReranker:
             return ordered_passages
         return [str(item) for item in results]
 
-    def rerank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
+    def rank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
         if not docs:
             return []
         passages = [_doc_to_passage(doc) for doc in docs]
@@ -65,7 +65,7 @@ class BceReranker:
             from BCEmbedding import RerankerModel
         except ImportError as exc:  # pragma: no cover - dependency missing
             raise ConfigurationError(
-                "BCEmbedding 未安装，无法启用 reranker。请先安装 BCEmbedding。"
+                "BCEmbedding 未安装，无法启用 ranker。请先安装 BCEmbedding。"
             ) from exc
 
         self._model = RerankerModel(model_name_or_path=self.model_name_or_path)

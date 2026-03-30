@@ -476,43 +476,43 @@ def test_retrieve_docs_tool_formats_output():
     assert "distance=" in output
 
 
-class FakeReranker:
+class FakeRanker:
     def __init__(self):
         self.last_query = ""
         self.last_docs: list[RetrievedDoc] = []
 
-    def rerank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
+    def rank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
         self.last_query = query
         self.last_docs = list(docs)
         return list(reversed(docs))
 
 
-def test_retriever_uses_reranker_when_configured():
-    reranker = FakeReranker()
+def test_retriever_uses_ranker_when_configured():
+    ranker = FakeRanker()
     retriever = Retriever(
         FakeVectorStore(),
         FakeEmbeddingClient(),
-        reranker=reranker,
+        ranker=ranker,
     )
 
     docs = retriever.retrieve("plugin", top_k=2)
 
     assert [doc.id for doc in docs] == [2, 1]
-    assert reranker.last_query == "plugin"
-    assert [doc.id for doc in reranker.last_docs] == [1, 2]
+    assert ranker.last_query == "plugin"
+    assert [doc.id for doc in ranker.last_docs] == [1, 2]
 
 
-def test_build_session_warmups_reranker(monkeypatch):
+def test_build_session_warmups_ranker(monkeypatch):
     warmed: list[str] = []
 
-    class FakeBceReranker:
+    class FakeBceRanker:
         def __init__(self, model_name_or_path: str):
             self.model_name_or_path = model_name_or_path
 
         def warmup(self) -> None:
             warmed.append(self.model_name_or_path)
 
-    monkeypatch.setattr(cli_module, "BceReranker", FakeBceReranker)
+    monkeypatch.setattr(cli_module, "BceRanker", FakeBceRanker)
 
     settings = replace(make_settings(), reranker_enabled=True)
 

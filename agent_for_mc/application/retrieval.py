@@ -4,7 +4,7 @@ import re
 
 from agent_for_mc.domain.models import RetrievedDoc
 from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
-from agent_for_mc.infrastructure.reranker import BceReranker
+from agent_for_mc.infrastructure.ranker import BceRanker
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 
 
@@ -20,11 +20,11 @@ class Retriever:
         self,
         vector_store: LancePluginVectorStore,
         embedding_client: JinaEmbeddingClient,
-        reranker: BceReranker | None = None,
+        ranker: BceRanker | None = None,
     ):
         self._vector_store = vector_store
         self._embedding_client = embedding_client
-        self._reranker = reranker
+        self._ranker = ranker
 
     def retrieve(self, search_query: str, *, top_k: int = 8) -> list[RetrievedDoc]:
         normalized_search_query = normalize_search_query(search_query)
@@ -35,8 +35,8 @@ class Retriever:
             top_k=top_k,
         )
         merged_docs = merge_retrieved_docs(boosted_docs, vector_docs)
-        if self._reranker is not None:
-            reranked_docs = self._reranker.rerank_docs(
+        if self._ranker is not None:
+            reranked_docs = self._ranker.rank_docs(
                 normalized_search_query,
                 merged_docs,
             )
