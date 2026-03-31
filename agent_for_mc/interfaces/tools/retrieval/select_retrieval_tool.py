@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import record_standalone_query
-from agent_for_mc.interfaces.tools.planning import get_planning_tool_context
+from agent_for_mc.interfaces.tools.routing.planning import get_planning_tool_context
 
 
 SELECT_RETRIEVAL_TOOL_SYSTEM_PROMPT = """

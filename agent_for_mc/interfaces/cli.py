@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent_for_mc.application.chat_session import RagChatSession
-from agent_for_mc.application.memory import build_memory_service
+from agent_for_mc.application.memory_service import build_memory_service
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.errors import ConfigurationError, RagForMcError, StartupValidationError
 from agent_for_mc.domain.models import AnswerResult

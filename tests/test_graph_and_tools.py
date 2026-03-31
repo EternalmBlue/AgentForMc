@@ -13,20 +13,19 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent_for_mc.application.chat_session import RagChatSession
-from agent_for_mc.application.memory import (
+from agent_for_mc.application.memory_service import (
     MemoryService,
     build_memory_service,
     extract_memory_candidates,
     format_memory_context,
     validate_memory_actions,
 )
-from agent_for_mc.application import memory as memory_module
-from agent_for_mc.application.plugin_config_retrieval import PluginConfigRetriever
 from agent_for_mc.application.deepagent_state import (
     clear_turn_context,
     record_retrieved_docs,
     start_turn_context,
 )
+from agent_for_mc.application.plugin_config import PluginConfigRetriever
 from agent_for_mc.application.prompts import format_history
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import AnswerResult, PluginConfigDoc, RetrievedDoc
@@ -40,63 +39,50 @@ from agent_for_mc.domain.errors import StartupValidationError
 from agent_for_mc.interfaces import cli as cli_module
 from agent_for_mc.interfaces.deepagent.build import build_deep_agent
 from agent_for_mc.interfaces.deepagent import build as deepagent_build_module
-from agent_for_mc.interfaces.tools.multi_query import multi_query_retrieve_docs
-from agent_for_mc.interfaces.tools.multi_query_rag import (
+from agent_for_mc.interfaces.tools.query_transform import (
+    HydeToolContext,
     MultiQueryRagToolContext,
+    QueryExpansionToolContext,
+    QueryRewriteToolContext,
+    configure_hyde_tool,
     configure_multi_query_rag_tool,
+    configure_query_expansion_tool,
+    configure_query_rewrite_tool,
+    hyde_retrieve_docs,
     multi_query_rag,
+    multi_query_retrieve_docs,
+    query_expansion,
+    query_rewrite,
+    subquery_decomposition,
 )
-from agent_for_mc.interfaces.tools.planning import (
+from agent_for_mc.interfaces.tools.routing import (
     PlanningToolContext,
+    PluginConfigRoutingToolContext,
     analyze_question,
     configure_planning_tool,
-)
-from agent_for_mc.interfaces.tools.judge_retrieval_freshness import (
-    JudgeRetrievalFreshnessToolContext,
-    configure_judge_retrieval_freshness_tool,
-    judge_retrieval_freshness,
-)
-from agent_for_mc.interfaces.tools.judge_answer_quality import (
-    JudgeAnswerQualityToolContext,
-    configure_judge_answer_quality_tool,
-    judge_answer_quality,
-)
-from agent_for_mc.interfaces.tools.hyde import (
-    HydeToolContext,
-    configure_hyde_tool,
-    hyde_retrieve_docs,
-)
-from agent_for_mc.interfaces.tools.query_rewrite import (
-    QueryRewriteToolContext,
-    configure_query_rewrite_tool,
-    query_rewrite,
-)
-from agent_for_mc.interfaces.tools.query_expansion import (
-    QueryExpansionToolContext,
-    configure_query_expansion_tool,
-    query_expansion,
-)
-from agent_for_mc.interfaces.tools.plugin_configs import (
-    PluginConfigToolContext,
-    configure_plugin_config_tool,
-    retrieve_plugin_configs,
-)
-from agent_for_mc.interfaces.tools.plugin_config_routing import (
-    PluginConfigRoutingToolContext,
     configure_plugin_config_routing_tool,
     route_plugin_config_request,
 )
-from agent_for_mc.interfaces.tools.select_retrieval_tool import (
+from agent_for_mc.interfaces.tools.retrieval import (
+    JudgeAnswerQualityToolContext,
+    JudgeRetrievalFreshnessToolContext,
+    RetrieveDocsToolContext,
     SelectRetrievalToolContext,
+    build_retrieve_docs_payload,
+    configure_judge_answer_quality_tool,
+    configure_judge_retrieval_freshness_tool,
+    configure_retrieve_docs_tool,
     configure_select_retrieval_tool,
+    get_server_plugins_list,
+    judge_answer_quality,
+    judge_retrieval_freshness,
+    retrieve_docs,
     select_retrieval_tool,
 )
-from agent_for_mc.interfaces.tools.subquery_decomposition import subquery_decomposition
-from agent_for_mc.interfaces.tools.retrieval import (
-    RetrieveDocsToolContext,
-    build_retrieve_docs_payload,
-    configure_retrieve_docs_tool,
-    retrieve_docs,
+from agent_for_mc.interfaces.tools.plugin_config import (
+    PluginConfigToolContext,
+    configure_plugin_config_tool,
+    retrieve_plugin_configs,
 )
 
 

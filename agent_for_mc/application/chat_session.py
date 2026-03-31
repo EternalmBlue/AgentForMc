@@ -11,7 +11,7 @@ from agent_for_mc.application.deepagent_state import (
     record_standalone_query,
     start_turn_context,
 )
-from agent_for_mc.application.memory import MemoryService, format_memory_context
+from agent_for_mc.application.memory_service import MemoryService, format_memory_context
 from agent_for_mc.application.prompts import format_history
 from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.domain.models import AnswerResult

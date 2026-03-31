@@ -11,7 +11,7 @@ from agent_for_mc.application.retrieval_tool import (
     format_docs_for_tool,
     get_retrieve_docs_tool_context,
 )
-from agent_for_mc.interfaces.tools.planning import get_planning_tool_context
+from agent_for_mc.interfaces.tools.routing.planning import get_planning_tool_context
 
 
 SUBQUERY_DECOMPOSITION_SYSTEM_PROMPT = """

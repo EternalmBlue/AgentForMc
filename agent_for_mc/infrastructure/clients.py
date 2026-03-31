@@ -46,8 +46,9 @@ class JinaEmbeddingClient:
 
 
 class DeepSeekChatClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, model_name: str | None = None):
         self._settings = settings
+        self._model_name = model_name or settings.deepseek_model
 
     def chat(
         self,
@@ -59,7 +60,7 @@ class DeepSeekChatClient:
             raise ConfigurationError("缺少环境变量 RAG_DEEPSEEK_API_KEY。")
 
         payload = {
-            "model": self._settings.deepseek_model,
+            "model": self._model_name,
             "messages": messages,
             "temperature": temperature,
         }
