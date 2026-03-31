@@ -16,6 +16,7 @@ from agent_for_mc.application.prompts import format_history
 from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.domain.models import AnswerResult
 from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 
 
@@ -46,67 +47,73 @@ class RagChatSession:
             self._memory_service.close()
 
     def ask(self, question: str) -> AnswerResult:
-        history = list(self._history)
-        standalone_query = question.strip()
-        memory_messages: list[BaseMessage] = []
+        with trace_operation(
+            "session.ask",
+            attributes={"component": "session", "question.length": len(question.strip())},
+            metric_name="rag_session_ask_seconds",
+        ):
+            record_counter("rag_session_ask_requests_total")
+            history = list(self._history)
+            standalone_query = question.strip()
+            memory_messages: list[BaseMessage] = []
 
-        if self._memory_service is not None:
-            try:
-                memory_records = self._memory_service.recall(
-                    question,
-                    history_text=format_history(history),
-                )
-                memory_context = format_memory_context(memory_records)
-                if memory_context:
-                    memory_messages.append(
-                        SystemMessage(
-                            content=(
-                                "长期记忆（仅作为参考，不要把它当作检索证据）：\n"
-                                f"{memory_context}"
-                            )
-                        )
-                    )
-            except Exception:
-                memory_messages = []
-
-        start_turn_context()
-        record_standalone_query(standalone_query)
-        try:
-            state = self._deep_agent.invoke(
-                {
-                    "messages": [
-                        *memory_messages,
-                        *history,
-                        HumanMessage(content=question),
-                    ]
-                }
-            )
-            answer_text = _extract_agent_answer(state)
-            if not answer_text:
-                raise ServiceError("DeepAgent 返回了空回答。")
-
-            turn = consume_turn_context()
-            citations = list(turn.retrieved_docs if turn else [])
-            result = AnswerResult(
-                answer=answer_text,
-                citations=citations,
-                standalone_query=(
-                    turn.standalone_query if turn and turn.standalone_query else standalone_query
-                ),
-            )
             if self._memory_service is not None:
                 try:
-                    self._memory_service.observe_turn(question, result.answer)
+                    memory_records = self._memory_service.recall(
+                        question,
+                        history_text=format_history(history),
+                    )
+                    memory_context = format_memory_context(memory_records)
+                    if memory_context:
+                        memory_messages.append(
+                            SystemMessage(
+                                content=(
+                                    "长期记忆（仅作为参考，不要把它当作检索证据）：\n"
+                                    f"{memory_context}"
+                                )
+                            )
+                        )
                 except Exception:
-                    pass
-        except Exception as exc:
-            raise ServiceError(f"DeepAgent 调用失败: {exc}") from exc
-        finally:
-            clear_turn_context()
+                    memory_messages = []
 
-        self._history.append(HumanMessage(content=question))
-        self._history.append(AIMessage(content=result.answer))
-        return result
+            start_turn_context()
+            record_standalone_query(standalone_query)
+            try:
+                state = self._deep_agent.invoke(
+                    {
+                        "messages": [
+                            *memory_messages,
+                            *history,
+                            HumanMessage(content=question),
+                        ]
+                    }
+                )
+                answer_text = _extract_agent_answer(state)
+                if not answer_text:
+                    raise ServiceError("DeepAgent 返回了空回答。")
+
+                turn = consume_turn_context()
+                citations = list(turn.retrieved_docs if turn else [])
+                result = AnswerResult(
+                    answer=answer_text,
+                    citations=citations,
+                    standalone_query=(
+                        turn.standalone_query if turn and turn.standalone_query else standalone_query
+                    ),
+                )
+                if self._memory_service is not None:
+                    try:
+                        self._memory_service.observe_turn(question, result.answer)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                raise ServiceError(f"DeepAgent 调用失败: {exc}") from exc
+            finally:
+                clear_turn_context()
+
+            self._history.append(HumanMessage(content=question))
+            self._history.append(AIMessage(content=result.answer))
+            return result
 
 
 def _extract_agent_answer(state: object) -> str:

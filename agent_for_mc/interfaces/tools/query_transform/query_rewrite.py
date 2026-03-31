@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import record_standalone_query
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
 QUERY_REWRITE_SYSTEM_PROMPT = """
@@ -48,21 +49,27 @@ def get_query_rewrite_tool_context() -> QueryRewriteToolContext:
 @tool("query_rewrite")
 def query_rewrite(question: str, history: str = "") -> str:
     """Rewrite a question into a standalone search query."""
-    context = get_query_rewrite_tool_context()
-    messages = [
-        {"role": "system", "content": QUERY_REWRITE_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Recent conversation:\n{history.strip() or 'No history.'}\n\n"
-                f"User question:\n{question.strip()}\n"
-            ),
-        },
-    ]
-    content = context.client.chat(messages, temperature=0.0)
-    standalone_query = _normalize_text(content) or _normalize_text(question)
-    record_standalone_query(standalone_query)
-    return standalone_query
+    with trace_operation(
+        "tool.query_rewrite",
+        attributes={"component": "tool", "question.length": len(question.strip())},
+        metric_name="rag_tool_query_rewrite_seconds",
+    ):
+        record_counter("rag_tool_query_rewrite_requests_total")
+        context = get_query_rewrite_tool_context()
+        messages = [
+            {"role": "system", "content": QUERY_REWRITE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Recent conversation:\n{history.strip() or 'No history.'}\n\n"
+                    f"User question:\n{question.strip()}\n"
+                ),
+            },
+        ]
+        content = context.client.chat(messages, temperature=0.0)
+        standalone_query = _normalize_text(content) or _normalize_text(question)
+        record_standalone_query(standalone_query)
+        return standalone_query
 
 
 def _normalize_text(value: str) -> str:

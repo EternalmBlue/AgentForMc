@@ -8,6 +8,7 @@ from agent_for_mc.application.plugin_config.retriever import PluginConfigRetriev
 from agent_for_mc.application.plugin_config.summarizer import summarize_plugin_configs
 from agent_for_mc.domain.models import PluginConfigDoc
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient, JinaEmbeddingClient
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.plugin_config_vector_store import (
     LancePluginConfigVectorStore,
 )
@@ -45,16 +46,22 @@ def build_plugin_config_payload(
     *,
     context: PluginConfigToolContext,
 ) -> tuple[list[PluginConfigDoc], str]:
-    docs = context.retriever.retrieve(search_query, top_k=context.top_k)
-    summary = summarize_plugin_configs(
-        search_query,
-        docs,
-        client=context.summarizer_client,
-        summary_max_chars=context.summary_max_chars,
-    )
-    evidence = format_plugin_config_docs(docs, preview_chars=context.preview_chars)
-    return docs, (
-        f"Query: {search_query.strip() or 'No query provided.'}\n"
-        f"Summary:\n{summary}\n\n"
-        f"Evidence:\n{evidence}"
-    )
+    with trace_operation(
+        "plugin_config.payload",
+        attributes={"component": "plugin_config", "query.length": len(search_query.strip())},
+        metric_name="rag_plugin_config_payload_seconds",
+    ):
+        record_counter("rag_plugin_config_payload_requests_total")
+        docs = context.retriever.retrieve(search_query, top_k=context.top_k)
+        summary = summarize_plugin_configs(
+            search_query,
+            docs,
+            client=context.summarizer_client,
+            summary_max_chars=context.summary_max_chars,
+        )
+        evidence = format_plugin_config_docs(docs, preview_chars=context.preview_chars)
+        return docs, (
+            f"Query: {search_query.strip() or 'No query provided.'}\n"
+            f"Summary:\n{summary}\n\n"
+            f"Evidence:\n{evidence}"
+        )

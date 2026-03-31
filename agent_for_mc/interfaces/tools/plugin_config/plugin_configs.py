@@ -8,6 +8,7 @@ from agent_for_mc.application.plugin_config import (
     configure_plugin_config_tool,
     get_plugin_config_tool_context,
 )
+from agent_for_mc.infrastructure.observability import trace_operation
 
 
 @tool("retrieve_plugin_configs")
@@ -17,8 +18,13 @@ def retrieve_plugin_configs(
 ) -> str:
     """Retrieve plugin configuration files and summarize the relevant settings."""
     effective_search_query = search_query or query or ""
-    _, formatted = build_plugin_config_payload(
-        effective_search_query,
-        context=get_plugin_config_tool_context(),
-    )
-    return formatted
+    with trace_operation(
+        "tool.retrieve_plugin_configs",
+        attributes={"component": "tool", "query.length": len(effective_search_query.strip())},
+        metric_name="rag_tool_retrieve_plugin_configs_seconds",
+    ):
+        _, formatted = build_plugin_config_payload(
+            effective_search_query,
+            context=get_plugin_config_tool_context(),
+        )
+        return formatted

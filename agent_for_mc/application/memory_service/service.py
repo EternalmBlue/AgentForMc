@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any
 
 from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.memory_store import (
     ALLOWED_MEMORY_TYPES,
     KIND_LABELS,
@@ -101,30 +102,36 @@ class MemoryMaintenanceRunner:
         turns: list[SessionTurn],
         memories: list[MemoryRecord],
     ) -> MemoryMaintenanceResult:
-        payload = _render_memory_maintenance_prompt(turns, memories)
-        raw = _invoke_memory_maintenance_agent(
-            self.agent,
-            system_prompt=_MEMORY_MAINTENANCE_SYSTEM_PROMPT,
-            payload=payload,
-        )
-        try:
-            return _parse_memory_maintenance_result(raw)
-        except Exception as exc:
-            repair_raw = _invoke_memory_maintenance_agent(
+        with trace_operation(
+            "memory_maintenance.run",
+            attributes={"component": "memory_maintenance", "turn.count": len(turns)},
+            metric_name="rag_memory_maintenance_seconds",
+        ):
+            record_counter("rag_memory_maintenance_requests_total")
+            payload = _render_memory_maintenance_prompt(turns, memories)
+            raw = _invoke_memory_maintenance_agent(
                 self.agent,
-                system_prompt=_MEMORY_MAINTENANCE_REPAIR_PROMPT,
-                payload=_render_repair_prompt(
-                    task_name="memory maintenance",
-                    previous_output=raw,
-                    error_message=str(exc),
-                    expected_schema=(
-                        '{"session_summary":"...","actions":['
-                        '{"action":"add","type":"preference","key":"gradle_style",'
-                        '"value":"kotlin_dsl","confidence":0.94}]}'
-                    ),
-                ),
+                system_prompt=_MEMORY_MAINTENANCE_SYSTEM_PROMPT,
+                payload=payload,
             )
-            return _parse_memory_maintenance_result(repair_raw)
+            try:
+                return _parse_memory_maintenance_result(raw)
+            except Exception as exc:
+                repair_raw = _invoke_memory_maintenance_agent(
+                    self.agent,
+                    system_prompt=_MEMORY_MAINTENANCE_REPAIR_PROMPT,
+                    payload=_render_repair_prompt(
+                        task_name="memory maintenance",
+                        previous_output=raw,
+                        error_message=str(exc),
+                        expected_schema=(
+                            '{"session_summary":"...","actions":['
+                            '{"action":"add","type":"preference","key":"gradle_style",'
+                            '"value":"kotlin_dsl","confidence":0.94}]}'
+                        ),
+                    ),
+                )
+                return _parse_memory_maintenance_result(repair_raw)
 
 
 @dataclass(slots=True)
@@ -150,8 +157,14 @@ class MemoryService:
         self._next_consolidation_turn = max(1, int(self.consolidation_turns))
 
     def recall(self, question: str, *, history_text: str = "") -> list[MemoryRecord]:
-        query = _combine_query(question, history_text)
-        return self.store.recall(query, limit=self.recall_limit)
+        with trace_operation(
+            "memory.recall",
+            attributes={"component": "memory", "query.length": len(question.strip())},
+            metric_name="rag_memory_recall_seconds",
+        ):
+            record_counter("rag_memory_recall_requests_total")
+            query = _combine_query(question, history_text)
+            return self.store.recall(query, limit=self.recall_limit)
 
     def observe_turn(self, question: str, answer: str) -> None:
         self.record_turn(question, answer)
@@ -160,16 +173,22 @@ class MemoryService:
         if self._closed:
             return
 
-        question_text = question.strip()
-        answer_text = answer.strip()
-        if not question_text and not answer_text:
-            return
+        with trace_operation(
+            "memory.record_turn",
+            attributes={"component": "memory", "question.length": len(question.strip())},
+            metric_name="rag_memory_record_turn_seconds",
+        ):
+            record_counter("rag_memory_record_turn_requests_total")
+            question_text = question.strip()
+            answer_text = answer.strip()
+            if not question_text and not answer_text:
+                return
 
-        with self._lock:
-            self._turn_ledger.append(
-                SessionTurn(question=question_text, answer=answer_text)
-            )
-            self._maybe_schedule_consolidation_locked()
+            with self._lock:
+                self._turn_ledger.append(
+                    SessionTurn(question=question_text, answer=answer_text)
+                )
+                self._maybe_schedule_consolidation_locked()
 
     def wait_for_idle(self, timeout: float | None = None) -> None:
         remaining = timeout
@@ -218,25 +237,30 @@ class MemoryService:
             self._maybe_schedule_consolidation_locked()
 
     def _run_consolidation(self, turns: list[SessionTurn]) -> None:
-        try:
-            existing_memories = self.store.list_all()
-            result = self.maintenance_runner.run(turns, existing_memories)
-            actions = result.actions
-            validated_actions = validate_memory_actions(actions, existing_memories)
-            validated_actions = [
-                action
-                for action in validated_actions
-                if action.action == "delete" or action.confidence >= self.min_confidence
-            ]
-            if not validated_actions:
-                return
-            self.store.apply_actions(
-                validated_actions,
-                source_question=result.session_summary or "session_summary",
-                source_answer=_render_turn_ledger(turns),
-            )
-        except Exception as exc:  # pragma: no cover - background failure
-            LOGGER.warning("Memory consolidation failed: %s", exc, exc_info=True)
+        with trace_operation(
+            "memory.consolidation",
+            attributes={"component": "memory", "turn.count": len(turns)},
+            metric_name="rag_memory_consolidation_seconds",
+        ):
+            try:
+                existing_memories = self.store.list_all()
+                result = self.maintenance_runner.run(turns, existing_memories)
+                actions = result.actions
+                validated_actions = validate_memory_actions(actions, existing_memories)
+                validated_actions = [
+                    action
+                    for action in validated_actions
+                    if action.action == "delete" or action.confidence >= self.min_confidence
+                ]
+                if not validated_actions:
+                    return
+                self.store.apply_actions(
+                    validated_actions,
+                    source_question=result.session_summary or "session_summary",
+                    source_answer=_render_turn_ledger(turns),
+                )
+            except Exception as exc:  # pragma: no cover - background failure
+                LOGGER.warning("Memory consolidation failed: %s", exc, exc_info=True)
 
 
 def build_memory_service(
@@ -251,7 +275,7 @@ def build_memory_service(
     store = SQLiteMemoryStore(settings.memory_db_path, scope_id=scope_id)
     store.initialize()
     if maintenance_agent is None:
-        from agent_for_mc.interfaces.deepagent.build import build_memory_maintenance_agent
+        from agent_for_mc.interfaces.deepagent import build_memory_maintenance_agent
 
         maintenance_agent = build_memory_maintenance_agent(settings=settings)
     if maintenance_agent is None:

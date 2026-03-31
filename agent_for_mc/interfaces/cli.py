@@ -7,15 +7,17 @@ from agent_for_mc.domain.errors import ConfigurationError, RagForMcError, Startu
 from agent_for_mc.domain.models import AnswerResult
 from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
 from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.observability import configure_observability
 from agent_for_mc.infrastructure.ranker import BceRanker
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
-from agent_for_mc.interfaces.deepagent.build import (
+from agent_for_mc.interfaces.deepagent import (
     build_deep_agent,
     build_memory_maintenance_agent,
 )
 
 
 def build_session(settings: Settings, *, memory_scope_id: str) -> RagChatSession:
+    configure_observability()
     vector_store = LancePluginVectorStore(
         settings.lance_db_dir,
         settings.lance_table_name,
