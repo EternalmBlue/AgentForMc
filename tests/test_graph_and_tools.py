@@ -1,13 +1,27 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 import json
 
-from langchain_core.messages import AIMessage, HumanMessage
+import pyarrow as pa
+
+import pytest
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent_for_mc.application.chat_session import RagChatSession
+from agent_for_mc.application.memory import (
+    MemoryService,
+    build_memory_service,
+    extract_memory_candidates,
+    format_memory_context,
+    validate_memory_actions,
+)
+from agent_for_mc.application import memory as memory_module
+from agent_for_mc.application.plugin_config_retrieval import PluginConfigRetriever
 from agent_for_mc.application.deepagent_state import (
     clear_turn_context,
     record_retrieved_docs,
@@ -15,10 +29,17 @@ from agent_for_mc.application.deepagent_state import (
 )
 from agent_for_mc.application.prompts import format_history
 from agent_for_mc.application.retrieval import Retriever
-from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
+from agent_for_mc.domain.models import AnswerResult, PluginConfigDoc, RetrievedDoc
 from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.memory_store import MemoryAction, MemoryCandidate, SQLiteMemoryStore
+from agent_for_mc.infrastructure.plugin_config_vector_store import (
+    LancePluginConfigVectorStore,
+)
+from agent_for_mc.infrastructure import plugin_config_vector_store as plugin_config_vector_store_module
+from agent_for_mc.domain.errors import StartupValidationError
 from agent_for_mc.interfaces import cli as cli_module
 from agent_for_mc.interfaces.deepagent.build import build_deep_agent
+from agent_for_mc.interfaces.deepagent import build as deepagent_build_module
 from agent_for_mc.interfaces.tools.multi_query import multi_query_retrieve_docs
 from agent_for_mc.interfaces.tools.multi_query_rag import (
     MultiQueryRagToolContext,
@@ -54,6 +75,16 @@ from agent_for_mc.interfaces.tools.query_expansion import (
     QueryExpansionToolContext,
     configure_query_expansion_tool,
     query_expansion,
+)
+from agent_for_mc.interfaces.tools.plugin_configs import (
+    PluginConfigToolContext,
+    configure_plugin_config_tool,
+    retrieve_plugin_configs,
+)
+from agent_for_mc.interfaces.tools.plugin_config_routing import (
+    PluginConfigRoutingToolContext,
+    configure_plugin_config_routing_tool,
+    route_plugin_config_request,
 )
 from agent_for_mc.interfaces.tools.select_retrieval_tool import (
     SelectRetrievalToolContext,
@@ -100,6 +131,42 @@ class FakeEmbeddingClient:
         return [0.0, 1.0]
 
 
+class FakePluginConfigVectorStore:
+    def find_name_matches(self, search_query: str):
+        return [
+            PluginConfigDoc(
+                id=11,
+                plugin_chinese_name="MMORPG",
+                plugin_english_name="MMORPG",
+                file_path="mmorpg/config.yml",
+                content="mob-spawn-rate: 1.0",
+                distance=0.0,
+                match_reason="name-boost",
+            )
+        ]
+
+    def search_by_embedding(self, embedding, *, top_k: int):
+        return [
+            PluginConfigDoc(
+                id=12,
+                plugin_chinese_name="MMORPG",
+                plugin_english_name="MMORPG",
+                file_path="mmorpg/mob.yml",
+                content="mob-level: 5",
+                distance=0.13,
+                match_reason="vector",
+            )
+        ]
+
+
+class FakePluginConfigSummaryClient:
+    def chat(self, messages, *, temperature: float = 0.0):
+        system_prompt = str(messages[0]["content"])
+        if "插件配置整理助手" in system_prompt or "plugin configuration" in system_prompt.lower():
+            return "MMORPG 的配置分散在 config.yml 和 mob.yml 中，当前问题涉及怪物生成和等级设置。"
+        return "unexpected prompt"
+
+
 class FakeDeepAgent:
     def invoke(self, payload):
         record_retrieved_docs(
@@ -117,6 +184,30 @@ class FakeDeepAgent:
         return {"messages": [AIMessage(content="deep answer")]}
 
 
+class MemoryAwareDeepAgent:
+    def __init__(self):
+        self.invocations: list[list[object]] = []
+
+    def invoke(self, payload):
+        messages = list(payload["messages"])
+        self.invocations.append(messages)
+
+        memory_message = None
+        for message in messages:
+            if isinstance(message, SystemMessage) and "长期记忆" in str(message.content):
+                memory_message = str(message.content)
+                break
+
+        if memory_message:
+            return {
+                "messages": [
+                    AIMessage(content=f"收到记忆：{memory_message}"),
+                ]
+            }
+
+        return {"messages": [AIMessage(content="第一次回复，已记录。")]} 
+
+
 class FakePlanningClient:
     def chat(self, messages, *, temperature: float = 0.0):
         return json.dumps(
@@ -129,6 +220,35 @@ class FakePlanningClient:
                     "plugin config issue related plugins",
                 ],
                 "need_plugins": True,
+            },
+            ensure_ascii=False,
+        )
+
+
+class FakeRoutingClient:
+    def __init__(self, route: str):
+        self.route = route
+
+    def chat(self, messages, *, temperature: float = 0.0):
+        if self.route == "plugin_config_agent":
+            return json.dumps(
+                {
+                    "route": "plugin_config_agent",
+                    "use_subagent": True,
+                    "normalized_query": "How should I set the plugin config defaults?",
+                    "reason": "The question is about defaults and file-level configuration.",
+                    "confidence": 0.96,
+                },
+                ensure_ascii=False,
+            )
+
+        return json.dumps(
+            {
+                "route": "main_agent",
+                "use_subagent": False,
+                "normalized_query": "How do I compare plugin behavior?",
+                "reason": "The question is not about plugin config files.",
+                "confidence": 0.91,
             },
             ensure_ascii=False,
         )
@@ -369,6 +489,62 @@ class FakeSubQueryClient:
         )
 
 
+class FakeMemoryChatClient:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def chat(self, messages, *, temperature: float = 0.0):
+        system_prompt = str(messages[0]["content"])
+        self.calls.append(system_prompt)
+
+        if "memory consolidation" in system_prompt:
+            return json.dumps(
+                {
+                    "actions": [
+                        {
+                            "action": "add",
+                            "type": "preference",
+                            "key": "answer_style",
+                            "value": "简洁中文回答",
+                            "confidence": 0.96,
+                        },
+                        {
+                            "action": "add",
+                            "type": "fact",
+                            "key": "project_stack",
+                            "value": "Paper",
+                            "confidence": 0.9,
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        if "session summary" in system_prompt:
+            return json.dumps(
+                {
+                    "session_summary": "用户偏好简洁中文回答，并且项目使用 Paper。",
+                    "candidate_memories": [
+                        {
+                            "type": "preference",
+                            "key": "answer_style",
+                            "value": "简洁中文回答",
+                            "confidence": 0.96,
+                        },
+                        {
+                            "type": "fact",
+                            "key": "project_stack",
+                            "value": "Paper",
+                            "confidence": 0.9,
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+        raise AssertionError(f"unexpected memory prompt: {system_prompt}")
+
+
 def make_settings() -> Settings:
     return Settings(
         lance_db_dir=Path("data/plugins_vector_db"),
@@ -389,6 +565,18 @@ def make_settings() -> Settings:
         model_cache_dir=Path(".cache/models"),
         reranker_enabled=False,
         reranker_model_name_or_path="maidalun1020/bce-reranker-base_v1",
+        plugin_config_agent_model="deepseek-chat",
+        memory_maintenance_agent_model="deepseek-chat",
+        memory_enabled=False,
+        memory_db_path=Path(".cache/memory/memory.sqlite3"),
+        memory_recall_limit=5,
+        memory_min_confidence=0.75,
+        memory_consolidation_turns=4,
+        plugin_config_db_dir=Path("data/plugin_config_vector_db"),
+        plugin_config_table_name="plugin_config_docs",
+        plugin_config_top_k=6,
+        plugin_config_preview_chars=220,
+        plugin_config_summary_chars=500,
     )
 
 
@@ -434,6 +622,26 @@ citation_preview_chars = 200
 [reranker]
 enabled = true
 model_name_or_path = "maidalun1020/bce-reranker-base_v1"
+
+[plugin_config_agent]
+model = "deepseek-lite"
+
+[memory_maintenance_agent]
+model = "deepseek-mini"
+
+[memory]
+enabled = true
+db_path = ".cache/memory/memory.sqlite3"
+recall_limit = 3
+min_confidence = 0.8
+consolidation_turns = 6
+
+[plugin_config_store]
+db_dir = "data/plugin_config_vector_db"
+table_name = "plugin_config_docs"
+top_k = 7
+preview_chars = 180
+summary_chars = 420
 """.strip(),
         encoding="utf-8",
     )
@@ -453,10 +661,143 @@ model_name_or_path = "maidalun1020/bce-reranker-base_v1"
     assert settings.deepseek_api_key == "test-deepseek-key"
     assert settings.reranker_enabled is True
     assert settings.reranker_model_name_or_path == "maidalun1020/bce-reranker-base_v1"
+    assert settings.plugin_config_agent_model == "deepseek-lite"
+    assert settings.memory_maintenance_agent_model == "deepseek-mini"
+    assert settings.memory_enabled is True
+    assert settings.memory_db_path == (tmp_path / ".cache/memory/memory.sqlite3").resolve()
+    assert settings.memory_recall_limit == 3
+    assert settings.memory_min_confidence == 0.8
+    assert settings.memory_consolidation_turns == 6
+    assert settings.plugin_config_db_dir == (
+        tmp_path / "data/plugin_config_vector_db"
+    ).resolve()
+    assert settings.plugin_config_table_name == "plugin_config_docs"
+    assert settings.plugin_config_top_k == 7
+    assert settings.plugin_config_preview_chars == 180
+    assert settings.plugin_config_summary_chars == 420
     assert os.environ["HF_HOME"] == str(settings.model_cache_dir)
     assert os.environ["TRANSFORMERS_CACHE"] == str(
         settings.model_cache_dir / "transformers"
     )
+
+
+def test_extract_memory_candidates_filters_stable_preferences():
+    candidates = extract_memory_candidates(
+        "Please remember that I prefer concise Chinese answers and my project uses Paper.",
+        "Sure.",
+    )
+
+    assert [candidate.kind for candidate in candidates] == ["preference", "fact"]
+    assert candidates[0].content == "偏好：concise Chinese answers"
+    assert candidates[0].confidence >= 0.95
+    assert candidates[1].content == "事实：Paper"
+
+
+def test_sqlite_memory_store_persists_and_recalls_by_keyword(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3", scope_id="test-user")
+    store.save_candidates(
+        [
+            MemoryCandidate(
+                kind="preference",
+                content="偏好：回答时使用简洁中文",
+                source_question="请记住我偏好简洁中文回答",
+                source_answer="ok",
+                confidence=0.97,
+            ),
+            MemoryCandidate(
+                kind="fact",
+                content="事实：当前项目使用 Paper",
+                source_question="我们的项目用的是 Paper",
+                source_answer="ok",
+                confidence=0.9,
+            ),
+        ]
+    )
+
+    recalled = store.recall("请用简洁中文回答", limit=5)
+
+    assert [record.kind for record in recalled][0] == "preference"
+    assert recalled[0].content == "偏好：回答时使用简洁中文"
+
+
+def test_memory_service_recall_context_formats_memories(tmp_path):
+    settings = replace(
+        make_settings(),
+        memory_enabled=True,
+        memory_db_path=tmp_path / "memory.sqlite3",
+        memory_recall_limit=3,
+        memory_min_confidence=0.75,
+    )
+    memory_service = build_memory_service(settings, scope_id="test-user")
+    assert memory_service is not None
+    memory_service.store.save_candidates(
+        [
+            MemoryCandidate(
+                kind="preference",
+                content="偏好：回答时使用简洁中文",
+                source_question="请记住我偏好简洁中文回答",
+                source_answer="ok",
+                confidence=0.97,
+            )
+        ]
+    )
+
+    recalled = memory_service.recall("请继续用简洁中文回答", history_text="之前说过偏好")
+    formatted = format_memory_context(recalled)
+
+    assert "长期记忆" not in formatted
+    assert "偏好：回答时使用简洁中文" in formatted
+
+
+def test_build_memory_service_uses_supplied_maintenance_agent(tmp_path):
+    class FakeMaintenanceAgent:
+        pass
+
+    settings = replace(
+        make_settings(),
+        memory_enabled=True,
+        memory_db_path=tmp_path / "memory.sqlite3",
+    )
+
+    maintenance_agent = FakeMaintenanceAgent()
+    memory_service = build_memory_service(
+        settings,
+        scope_id="test-user",
+        maintenance_agent=maintenance_agent,
+    )
+
+    assert memory_service is not None
+    assert memory_service.maintenance_runner.agent is maintenance_agent
+
+
+def test_build_memory_maintenance_agent_uses_configured_model(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeChatDeepSeek:
+        def __init__(self, *, model: str, api_key: str, api_base: str, temperature: float, timeout: int):
+            captured["model"] = model
+            captured["api_key"] = api_key
+            captured["api_base"] = api_base
+            captured["temperature"] = temperature
+            captured["timeout"] = timeout
+
+    def fake_create_deep_agent(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"agent": "memory-maintenance"}
+
+    monkeypatch.setattr(deepagent_build_module, "ChatDeepSeek", FakeChatDeepSeek)
+    monkeypatch.setattr(deepagent_build_module, "create_deep_agent", fake_create_deep_agent)
+
+    settings = replace(
+        make_settings(),
+        memory_maintenance_agent_model="deepseek-mini",
+    )
+
+    agent = deepagent_build_module.build_memory_maintenance_agent(settings=settings)
+
+    assert agent == {"agent": "memory-maintenance"}
+    assert captured["model"] == "deepseek-mini"
+    assert captured["kwargs"]["system_prompt"] == deepagent_build_module.MEMORY_MAINTENANCE_SYSTEM_PROMPT
 
 
 def test_retrieve_docs_tool_formats_output():
@@ -516,7 +857,7 @@ def test_build_session_warmups_ranker(monkeypatch):
 
     settings = replace(make_settings(), reranker_enabled=True)
 
-    session = cli_module.build_session(settings)
+    session = cli_module.build_session(settings, memory_scope_id="test-user")
 
     assert isinstance(session, RagChatSession)
     assert warmed == ["maidalun1020/bce-reranker-base_v1"]
@@ -538,6 +879,114 @@ def test_payload_helper_returns_docs_and_summary():
     assert "PluginA" in summary
 
 
+def test_plugin_config_retrieve_tool_returns_summary_and_paths():
+    configure_plugin_config_tool(
+        PluginConfigToolContext(
+            retriever=PluginConfigRetriever(
+                FakePluginConfigVectorStore(),
+                FakeEmbeddingClient(),
+            ),
+            summarizer_client=FakePluginConfigSummaryClient(),
+            top_k=2,
+            preview_chars=18,
+            summary_max_chars=120,
+        )
+    )
+
+    output = retrieve_plugin_configs.invoke({"query": "How do I configure mob spawn?"})
+
+    assert "MMORPG 的配置分散在 config.yml 和 mob.yml 中" in output
+    assert "mmorpg/config.yml" in output
+    assert "mmorpg/mob.yml" in output
+    assert "Evidence:" in output
+
+
+def test_build_deep_agent_registers_plugin_config_tool(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_create_deep_agent(**kwargs):
+        captured["tools"] = kwargs["tools"]
+        captured["subagents"] = kwargs.get("subagents", [])
+        captured["system_prompt"] = kwargs["system_prompt"]
+
+        class _Agent:
+            def invoke(self, payload):
+                return {"messages": [AIMessage(content="ok")]}
+
+        return _Agent()
+
+    monkeypatch.setattr(deepagent_build_module, "create_deep_agent", fake_create_deep_agent)
+
+    settings = make_settings()
+    agent = build_deep_agent(
+        settings=settings,
+        retriever=Retriever(FakeVectorStore(), FakeEmbeddingClient()),
+    )
+
+    tool_names = [getattr(tool, "name", "") for tool in captured["tools"]]
+    assert "route_plugin_config_request" in tool_names
+    assert "retrieve_plugin_configs" not in tool_names
+    assert "route_plugin_config_request" in str(captured["system_prompt"])
+    assert "plugin_config_agent" in str(captured["system_prompt"])
+    assert len(captured["subagents"]) == 1
+    plugin_subagent = captured["subagents"][0]
+    assert plugin_subagent["name"] == "plugin_config_agent"
+    assert getattr(plugin_subagent["model"], "model_name", None) == settings.plugin_config_agent_model
+    plugin_subagent_tool_names = [getattr(tool, "name", "") for tool in plugin_subagent["tools"]]
+    assert plugin_subagent_tool_names == ["retrieve_plugin_configs"]
+    assert agent is not None
+
+
+def test_plugin_config_vector_store_validation_errors(tmp_path, monkeypatch):
+    missing_store = LancePluginConfigVectorStore(
+        tmp_path / "missing",
+        "plugin_config_docs",
+    )
+    with pytest.raises(StartupValidationError, match="目录不存在"):
+        missing_store.validate()
+
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+
+    class _MissingTableDB:
+        def open_table(self, table_name):
+            raise RuntimeError("table missing")
+
+    monkeypatch.setattr(
+        plugin_config_vector_store_module.lancedb,
+        "connect",
+        lambda _: _MissingTableDB(),
+    )
+    missing_table_store = LancePluginConfigVectorStore(db_dir, "plugin_config_docs")
+    with pytest.raises(StartupValidationError, match="无法打开配置向量表"):
+        missing_table_store.validate()
+
+    class _MissingFieldTable:
+        def to_arrow(self):
+            return pa.table(
+                {
+                    "id": [1],
+                    "content": ["mob-level: 5"],
+                    "plugin_chinese_name": ["MMORPG"],
+                    "plugin_english_name": ["MMORPG"],
+                    "embedding": [[0.0, 1.0]],
+                }
+            )
+
+    class _MissingFieldDB:
+        def open_table(self, table_name):
+            return _MissingFieldTable()
+
+    monkeypatch.setattr(
+        plugin_config_vector_store_module.lancedb,
+        "connect",
+        lambda _: _MissingFieldDB(),
+    )
+    missing_field_store = LancePluginConfigVectorStore(db_dir, "plugin_config_docs")
+    with pytest.raises(StartupValidationError, match="缺少必要字段"):
+        missing_field_store.validate()
+
+
 def test_analyze_question_tool_returns_plan_json():
     configure_planning_tool(PlanningToolContext(client=FakePlanningClient()))
 
@@ -554,6 +1003,43 @@ def test_analyze_question_tool_returns_plan_json():
     assert data["need_multi_query"] is True
     assert data["need_plugins"] is True
     assert len(data["queries"]) == 3
+
+
+def test_route_plugin_config_request_returns_subagent_route():
+    configure_plugin_config_routing_tool(
+        PluginConfigRoutingToolContext(client=FakeRoutingClient("plugin_config_agent"))
+    )
+
+    output = route_plugin_config_request.invoke(
+        {
+            "question": "How should I set the plugin config defaults?",
+            "history": "We talked about YAML files.",
+        }
+    )
+
+    data = json.loads(output)
+    assert data["route"] == "plugin_config_agent"
+    assert data["use_subagent"] is True
+    assert data["normalized_query"] == "How should I set the plugin config defaults?"
+    assert "defaults" in data["reason"]
+
+
+def test_route_plugin_config_request_defaults_to_main_agent():
+    configure_plugin_config_routing_tool(
+        PluginConfigRoutingToolContext(client=FakeRoutingClient("main_agent"))
+    )
+
+    output = route_plugin_config_request.invoke(
+        {
+            "question": "How do I compare plugin behavior?",
+            "history": "",
+        }
+    )
+
+    data = json.loads(output)
+    assert data["route"] == "main_agent"
+    assert data["use_subagent"] is False
+    assert data["normalized_query"] == "How do I compare plugin behavior?"
 
 
 def test_query_rewrite_tool_returns_standalone_query():
@@ -820,3 +1306,257 @@ def test_rag_chat_session_uses_deep_agent():
     assert result.standalone_query == "plugin question"
     assert [doc.id for doc in result.citations] == [777]
     assert isinstance(session._history[-1], AIMessage)
+
+
+def test_rag_chat_session_recalls_and_writes_memory(tmp_path):
+    settings = replace(
+        make_settings(),
+        memory_enabled=True,
+        memory_db_path=tmp_path / "memory.sqlite3",
+        memory_recall_limit=3,
+        memory_min_confidence=0.75,
+        memory_consolidation_turns=2,
+    )
+
+    class FakeMemoryMaintenanceAgent:
+        def __init__(self):
+            self.invocations: list[list[object]] = []
+
+        def invoke(self, payload):
+            messages = list(payload["messages"])
+            self.invocations.append(messages)
+            return {
+                "messages": [
+                    {
+                        "content": json.dumps(
+                            {
+                                "session_summary": "用户偏好：回答保持简洁中文，项目使用 Paper。",
+                                "actions": [
+                                    {
+                                        "action": "add",
+                                        "type": "preference",
+                                        "key": "answer_style",
+                                        "value": "简洁中文回答",
+                                        "confidence": 0.96,
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                ]
+            }
+
+    memory_service = build_memory_service(
+        settings,
+        scope_id="test-user",
+        maintenance_agent=FakeMemoryMaintenanceAgent(),
+    )
+    assert memory_service is not None
+
+    session = RagChatSession(
+        settings=settings,
+        vector_store=FakeVectorStore(),
+        deep_agent=MemoryAwareDeepAgent(),
+        memory_service=memory_service,
+    )
+
+    first_result = session.ask("Please remember that I prefer concise Chinese answers.")
+    second_result = session.ask("My project uses Paper.")
+    memory_service.wait_for_idle(timeout=5)
+    third_result = session.ask("Please continue in concise Chinese.")
+    memory_service.wait_for_idle(timeout=5)
+
+    assert first_result.answer == "第一次回复，已记录。"
+    assert second_result.answer == "第一次回复，已记录。"
+    assert "收到记忆" in third_result.answer
+    assert "简洁中文回答" in third_result.answer
+    assert len(session._history) == 6
+
+    third_invocation = session._deep_agent.invocations[-1]
+    assert isinstance(third_invocation[0], SystemMessage)
+    assert "长期记忆" in str(third_invocation[0].content)
+    assert isinstance(third_invocation[1], HumanMessage)
+
+    stored = memory_service.recall("简洁中文回答")
+    assert stored
+    assert stored[0].kind == "preference"
+    assert stored[0].key == "answer_style"
+    assert stored[0].value == "简洁中文回答"
+    assert isinstance(session._history[-1], AIMessage)
+    session.close()
+
+
+def test_validate_memory_actions_enforces_rules():
+    validated = validate_memory_actions(
+        [
+            MemoryAction(
+                action="add",
+                type="preference",
+                key="answer_style",
+                value="简洁中文回答",
+                confidence=0.92,
+            ),
+            MemoryAction(
+                action="add",
+                type="preference",
+                key="answer_style",
+                value="简洁中文回答",
+                confidence=0.91,
+            ),
+        ],
+        [],
+    )
+    assert len(validated) == 1
+
+    with pytest.raises(ValueError, match="非法的 memory type"):
+        validate_memory_actions(
+            [
+                MemoryAction(
+                    action="add",
+                    type="unknown",
+                    key="answer_style",
+                    value="简洁中文回答",
+                    confidence=0.92,
+                )
+            ],
+            [],
+        )
+
+    with pytest.raises(ValueError, match="非法的 memory key"):
+        validate_memory_actions(
+            [
+                MemoryAction(
+                    action="add",
+                    type="preference",
+                    key="AnswerStyle",
+                    value="简洁中文回答",
+                    confidence=0.92,
+                )
+            ],
+            [],
+        )
+
+    with pytest.raises(ValueError, match="update action 指向不存在的 memory_id"):
+        validate_memory_actions(
+            [
+                MemoryAction(
+                    action="update",
+                    type="preference",
+                    key="answer_style",
+                    value="简洁中文回答",
+                    confidence=0.92,
+                    memory_id=999,
+                )
+            ],
+            [],
+        )
+
+
+def test_sqlite_memory_store_deletes_and_migrates_legacy_rows(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE memory_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            content TEXT NOT NULL,
+            normalized_content TEXT NOT NULL UNIQUE,
+            source_question TEXT NOT NULL,
+            source_answer TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO memory_items (
+            kind, content, normalized_content, source_question, source_answer,
+            confidence, created_at, updated_at, hit_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "preference",
+            "偏好：简洁中文回答",
+            "偏好：简洁中文回答",
+            "remember",
+            "ok",
+            0.9,
+            "2026-03-31T00:00:00+00:00",
+            "2026-03-31T00:00:00+00:00",
+            1,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteMemoryStore(db_path, scope_id="test-user")
+    store.initialize()
+    recalled = store.recall("简洁中文回答", limit=5)
+    assert recalled
+    assert recalled[0].kind == "preference"
+    assert recalled[0].value == "简洁中文回答"
+
+    store.apply_actions(
+        [
+            MemoryAction(
+                action="delete",
+                type=recalled[0].kind,
+                key=recalled[0].key,
+                memory_id=recalled[0].id,
+            )
+        ],
+        source_question="summary",
+        source_answer="ledger",
+    )
+    assert store.recall("简洁中文回答", limit=5) == []
+
+
+def test_memory_store_scopes_by_user(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    alice_store = SQLiteMemoryStore(db_path, scope_id="alice")
+    bob_store = SQLiteMemoryStore(db_path, scope_id="bob")
+
+    alice_store.apply_actions(
+        [
+            MemoryAction(
+                action="add",
+                type="preference",
+                key="answer_style",
+                value="简洁中文回答",
+                confidence=0.95,
+            )
+        ],
+        source_question="alice question",
+        source_answer="alice answer",
+    )
+    bob_store.apply_actions(
+        [
+            MemoryAction(
+                action="add",
+                type="fact",
+                key="project_stack",
+                value="Paper",
+                confidence=0.92,
+            )
+        ],
+        source_question="bob question",
+        source_answer="bob answer",
+    )
+
+    alice_recall = alice_store.recall("简洁中文回答", limit=5)
+    bob_recall = bob_store.recall("Paper", limit=5)
+
+    assert [(record.scope_id, record.key, record.value) for record in alice_recall] == [
+        ("alice", "answer_style", "简洁中文回答")
+    ]
+    assert [(record.scope_id, record.key, record.value) for record in bob_recall] == [
+        ("bob", "project_stack", "Paper")
+    ]
+
+
+

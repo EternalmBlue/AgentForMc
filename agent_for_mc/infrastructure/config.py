@@ -101,6 +101,18 @@ class Settings:
     model_cache_dir: Path
     reranker_enabled: bool
     reranker_model_name_or_path: str
+    plugin_config_agent_model: str
+    memory_maintenance_agent_model: str
+    memory_enabled: bool
+    memory_db_path: Path
+    memory_recall_limit: int
+    memory_min_confidence: float
+    memory_consolidation_turns: int
+    plugin_config_db_dir: Path
+    plugin_config_table_name: str
+    plugin_config_top_k: int
+    plugin_config_preview_chars: int
+    plugin_config_summary_chars: int
 
     @property
     def deepseek_api_base(self) -> str:
@@ -284,5 +296,144 @@ class Settings:
                     ),
                 )
                 or "maidalun1020/bce-reranker-base_v1"
+            ),
+            plugin_config_agent_model=str(
+                _get_env(
+                    "RAG_PLUGIN_CONFIG_AGENT_MODEL",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_config_agent",
+                            "model",
+                            "deepseek-chat",
+                        )
+                    ),
+                )
+                or "deepseek-chat"
+            ),
+            memory_maintenance_agent_model=str(
+                _get_env(
+                    "RAG_MEMORY_MAINTENANCE_AGENT_MODEL",
+                    default=str(
+                        _config_value(
+                            config,
+                            "memory_maintenance_agent",
+                            "model",
+                            "deepseek-chat",
+                        )
+                    ),
+                )
+                or "deepseek-chat"
+            ),
+            memory_enabled=_parse_bool(
+                _get_env(
+                    "RAG_MEMORY_ENABLED",
+                    default=str(_config_value(config, "memory", "enabled", False)),
+                ),
+                default=False,
+            ),
+            memory_db_path=_resolve_path(
+                _get_env(
+                    "RAG_MEMORY_DB_PATH",
+                    default=str(
+                        _config_value(
+                            config,
+                            "memory",
+                            "db_path",
+                            ".cache/memory/memory.sqlite3",
+                        )
+                    ),
+                )
+                or ".cache/memory/memory.sqlite3",
+                base_dir=config_base_dir,
+            ),
+            memory_recall_limit=int(
+                _get_env(
+                    "RAG_MEMORY_RECALL_LIMIT",
+                    default=str(_config_value(config, "memory", "recall_limit", 5)),
+                )
+                or "5"
+            ),
+            memory_min_confidence=float(
+                _get_env(
+                    "RAG_MEMORY_MIN_CONFIDENCE",
+                    default=str(_config_value(config, "memory", "min_confidence", 0.75)),
+                )
+                or "0.75"
+            ),
+            memory_consolidation_turns=int(
+                _get_env(
+                    "RAG_MEMORY_CONSOLIDATION_TURNS",
+                    default=str(
+                        _config_value(config, "memory", "consolidation_turns", 4)
+                    ),
+                )
+                or "4"
+            ),
+            plugin_config_db_dir=_resolve_path(
+                _get_env(
+                    "RAG_PLUGIN_CONFIG_DB_DIR",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_config_store",
+                            "db_dir",
+                            "data/plugin_config_vector_db",
+                        )
+                    ),
+                )
+                or "data/plugin_config_vector_db",
+                base_dir=config_base_dir,
+            ),
+            plugin_config_table_name=str(
+                _get_env(
+                    "RAG_PLUGIN_CONFIG_TABLE_NAME",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_config_store",
+                            "table_name",
+                            "plugin_config_docs",
+                        )
+                    ),
+                )
+                or "plugin_config_docs"
+            ),
+            plugin_config_top_k=int(
+                _get_env(
+                    "RAG_PLUGIN_CONFIG_TOP_K",
+                    default=str(
+                        _config_value(config, "plugin_config_store", "top_k", 6)
+                    ),
+                )
+                or "6"
+            ),
+            plugin_config_preview_chars=int(
+                _get_env(
+                    "RAG_PLUGIN_CONFIG_PREVIEW_CHARS",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_config_store",
+                            "preview_chars",
+                            220,
+                        )
+                    ),
+                )
+                or "220"
+            ),
+            plugin_config_summary_chars=int(
+                _get_env(
+                    "RAG_PLUGIN_CONFIG_SUMMARY_CHARS",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_config_store",
+                            "summary_chars",
+                            500,
+                        )
+                    ),
+                )
+                or "500"
             ),
         )

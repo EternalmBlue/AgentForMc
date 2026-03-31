@@ -19,6 +19,26 @@ embeddings_task = "retrieval.query"
 model = "deepseek-chat"
 chat_url = "https://api.deepseek.com/chat/completions"
 
+[plugin_config_agent]
+model = "deepseek-chat"
+
+[memory_maintenance_agent]
+model = "deepseek-chat"
+
 [reranker]
-enabled = false
+enabled = true
 model_name_or_path = "maidalun1020/bce-reranker-base_v1"
+
+[memory]
+enabled = false
+db_path = ".cache/memory/memory.sqlite3"
+recall_limit = 5
+min_confidence = 0.75
+consolidation_turns = 4
+
+[plugin_config_store]
+db_dir = "data/plugin_config_vector_db"
+table_name = "plugin_config_docs"
+top_k = 6
+preview_chars = 220
+summary_chars = 500
