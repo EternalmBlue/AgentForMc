@@ -6,6 +6,7 @@ import requests
 
 from agent_for_mc.domain.errors import ConfigurationError, ServiceError
 from agent_for_mc.infrastructure.config import Settings
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
 class JinaEmbeddingClient:
@@ -13,36 +14,42 @@ class JinaEmbeddingClient:
         self._settings = settings
 
     def embed_query(self, text: str) -> list[float]:
-        if not self._settings.jina_api_key:
-            raise ConfigurationError("缺少环境变量 RAG_JINA_API_KEY。")
+        with trace_operation(
+            "jina.embed_query",
+            attributes={"component": "embedding", "model": self._settings.jina_embeddings_model},
+            metric_name="rag_jina_embed_seconds",
+        ):
+            record_counter("rag_jina_embed_requests_total")
+            if not self._settings.jina_api_key:
+                raise ConfigurationError("缺少环境变量 RAG_JINA_API_KEY。")
 
-        payload = {
-            "model": self._settings.jina_embeddings_model,
-            "task": self._settings.jina_embeddings_task,
-            "normalized": True,
-            "input": text,
-        }
-        headers = {
-            "Authorization": f"Bearer {self._settings.jina_api_key}",
-            "Content-Type": "application/json",
-        }
+            payload = {
+                "model": self._settings.jina_embeddings_model,
+                "task": self._settings.jina_embeddings_task,
+                "normalized": True,
+                "input": text,
+            }
+            headers = {
+                "Authorization": f"Bearer {self._settings.jina_api_key}",
+                "Content-Type": "application/json",
+            }
 
-        try:
-            response = requests.post(
-                self._settings.jina_embeddings_url,
-                headers=headers,
-                json=payload,
-                timeout=self._settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise ServiceError(f"Jina embedding 请求失败: {exc}") from exc
+            try:
+                response = requests.post(
+                    self._settings.jina_embeddings_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self._settings.request_timeout_seconds,
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                raise ServiceError(f"Jina embedding 请求失败: {exc}") from exc
 
-        data = _read_json(response, "Jina embedding")
-        try:
-            return data["data"][0]["embedding"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ServiceError("Jina embedding 响应缺少 embedding 字段。") from exc
+            data = _read_json(response, "Jina embedding")
+            try:
+                return data["data"][0]["embedding"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise ServiceError("Jina embedding 响应缺少 embedding 字段。") from exc
 
 
 class DeepSeekChatClient:
@@ -56,40 +63,46 @@ class DeepSeekChatClient:
         *,
         temperature: float = 0.1,
     ) -> str:
-        if not self._settings.deepseek_api_key:
-            raise ConfigurationError("缺少环境变量 RAG_DEEPSEEK_API_KEY。")
+        with trace_operation(
+            "deepseek.chat",
+            attributes={"component": "llm", "model": self._model_name},
+            metric_name="rag_deepseek_chat_seconds",
+        ):
+            record_counter("rag_deepseek_chat_requests_total")
+            if not self._settings.deepseek_api_key:
+                raise ConfigurationError("缺少环境变量 RAG_DEEPSEEK_API_KEY。")
 
-        payload = {
-            "model": self._model_name,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        headers = {
-            "Authorization": f"Bearer {self._settings.deepseek_api_key}",
-            "Content-Type": "application/json",
-        }
+            payload = {
+                "model": self._model_name,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            headers = {
+                "Authorization": f"Bearer {self._settings.deepseek_api_key}",
+                "Content-Type": "application/json",
+            }
 
-        try:
-            response = requests.post(
-                self._settings.deepseek_chat_url,
-                headers=headers,
-                json=payload,
-                timeout=self._settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise ServiceError(f"DeepSeek 请求失败: {exc}") from exc
+            try:
+                response = requests.post(
+                    self._settings.deepseek_chat_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self._settings.request_timeout_seconds,
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                raise ServiceError(f"DeepSeek 请求失败: {exc}") from exc
 
-        data = _read_json(response, "DeepSeek")
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ServiceError("DeepSeek 响应缺少 message.content 字段。") from exc
+            data = _read_json(response, "DeepSeek")
+            try:
+                content = data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise ServiceError("DeepSeek 响应缺少 message.content 字段。") from exc
 
-        normalized = str(content).strip()
-        if not normalized:
-            raise ServiceError("DeepSeek 返回了空内容。")
-        return normalized
+            normalized = str(content).strip()
+            if not normalized:
+                raise ServiceError("DeepSeek 返回了空内容。")
+            return normalized
 
 
 def _read_json(response: requests.Response, service_name: str) -> dict[str, Any]:

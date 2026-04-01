@@ -6,6 +6,7 @@ from agent_for_mc.domain.models import RetrievedDoc
 from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
 from agent_for_mc.infrastructure.ranker import BceRanker
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -27,21 +28,27 @@ class Retriever:
         self._ranker = ranker
 
     def retrieve(self, search_query: str, *, top_k: int = 8) -> list[RetrievedDoc]:
-        normalized_search_query = normalize_search_query(search_query)
-        boosted_docs = self._vector_store.find_name_matches(normalized_search_query)
-        query_embedding = self._embedding_client.embed_query(normalized_search_query)
-        vector_docs = self._vector_store.search_by_embedding(
-            query_embedding,
-            top_k=top_k,
-        )
-        merged_docs = merge_retrieved_docs(boosted_docs, vector_docs)
-        if self._ranker is not None:
-            reranked_docs = self._ranker.rank_docs(
-                normalized_search_query,
-                merged_docs,
+        with trace_operation(
+            "retrieval.retrieve",
+            attributes={"component": "retrieval", "query.length": len(search_query.strip())},
+            metric_name="rag_retrieval_seconds",
+        ):
+            record_counter("rag_retrieval_requests_total")
+            normalized_search_query = normalize_search_query(search_query)
+            boosted_docs = self._vector_store.find_name_matches(normalized_search_query)
+            query_embedding = self._embedding_client.embed_query(normalized_search_query)
+            vector_docs = self._vector_store.search_by_embedding(
+                query_embedding,
+                top_k=top_k,
             )
-            return reranked_docs[:top_k]
-        return merge_retrieved_docs(boosted_docs, vector_docs, top_k=top_k)
+            merged_docs = merge_retrieved_docs(boosted_docs, vector_docs)
+            if self._ranker is not None:
+                reranked_docs = self._ranker.rank_docs(
+                    normalized_search_query,
+                    merged_docs,
+                )
+                return reranked_docs[:top_k]
+            return merge_retrieved_docs(boosted_docs, vector_docs, top_k=top_k)
 
 
 def merge_retrieved_docs(

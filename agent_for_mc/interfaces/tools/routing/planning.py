@@ -8,6 +8,7 @@ from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import record_standalone_query
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
 ANALYZE_QUERY_SYSTEM_PROMPT = """
@@ -55,22 +56,28 @@ def analyze_question(
     retrieval_summary: str = "",
 ) -> str:
     """Plan rewriting, multi-query need, and plugin checks for a question."""
-    context = get_planning_tool_context()
-    messages = [
-        {"role": "system", "content": ANALYZE_QUERY_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Recent conversation:\n{history.strip() or 'No history.'}\n\n"
-                f"User question:\n{question.strip()}\n\n"
-                f"Retrieval summary:\n{retrieval_summary.strip() or 'No retrieval summary.'}\n"
-            ),
-        },
-    ]
-    content = context.client.chat(messages, temperature=0.0)
-    parsed = _parse_analysis_result(content, fallback_question=question)
-    record_standalone_query(str(parsed["standalone_query"]))
-    return json.dumps(parsed, ensure_ascii=False)
+    with trace_operation(
+        "tool.analyze_question",
+        attributes={"component": "tool", "question.length": len(question.strip())},
+        metric_name="rag_tool_analyze_question_seconds",
+    ):
+        record_counter("rag_tool_analyze_question_requests_total")
+        context = get_planning_tool_context()
+        messages = [
+            {"role": "system", "content": ANALYZE_QUERY_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Recent conversation:\n{history.strip() or 'No history.'}\n\n"
+                    f"User question:\n{question.strip()}\n\n"
+                    f"Retrieval summary:\n{retrieval_summary.strip() or 'No retrieval summary.'}\n"
+                ),
+            },
+        ]
+        content = context.client.chat(messages, temperature=0.0)
+        parsed = _parse_analysis_result(content, fallback_question=question)
+        record_standalone_query(str(parsed["standalone_query"]))
+        return json.dumps(parsed, ensure_ascii=False)
 
 
 def _parse_analysis_result(content: str, *, fallback_question: str) -> dict[str, object]:

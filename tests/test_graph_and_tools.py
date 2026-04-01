@@ -37,8 +37,9 @@ from agent_for_mc.infrastructure.plugin_config_vector_store import (
 from agent_for_mc.infrastructure import plugin_config_vector_store as plugin_config_vector_store_module
 from agent_for_mc.domain.errors import StartupValidationError
 from agent_for_mc.interfaces import cli as cli_module
-from agent_for_mc.interfaces.deepagent.build import build_deep_agent
-from agent_for_mc.interfaces.deepagent import build as deepagent_build_module
+from agent_for_mc.interfaces.deepagent import build_deep_agent
+from agent_for_mc.interfaces.deepagent import main_agent as deepagent_main_agent_module
+from agent_for_mc.interfaces.deepagent import memory_agent as deepagent_memory_agent_module
 from agent_for_mc.interfaces.tools.query_transform import (
     HydeToolContext,
     MultiQueryRagToolContext,
@@ -771,19 +772,28 @@ def test_build_memory_maintenance_agent_uses_configured_model(monkeypatch):
         captured["kwargs"] = kwargs
         return {"agent": "memory-maintenance"}
 
-    monkeypatch.setattr(deepagent_build_module, "ChatDeepSeek", FakeChatDeepSeek)
-    monkeypatch.setattr(deepagent_build_module, "create_deep_agent", fake_create_deep_agent)
+    monkeypatch.setattr(deepagent_memory_agent_module, "create_deep_agent", fake_create_deep_agent)
+    monkeypatch.setattr(deepagent_memory_agent_module, "build_chat_model", lambda *, settings, model_name: FakeChatDeepSeek(
+        model=model_name,
+        api_key=settings.deepseek_api_key,
+        api_base=settings.deepseek_api_base,
+        temperature=0.1,
+        timeout=settings.request_timeout_seconds,
+    ))
 
     settings = replace(
         make_settings(),
         memory_maintenance_agent_model="deepseek-mini",
     )
 
-    agent = deepagent_build_module.build_memory_maintenance_agent(settings=settings)
+    agent = deepagent_memory_agent_module.build_memory_maintenance_agent(settings=settings)
 
     assert agent == {"agent": "memory-maintenance"}
     assert captured["model"] == "deepseek-mini"
-    assert captured["kwargs"]["system_prompt"] == deepagent_build_module.MEMORY_MAINTENANCE_SYSTEM_PROMPT
+    assert (
+        captured["kwargs"]["system_prompt"]
+        == deepagent_memory_agent_module.MEMORY_MAINTENANCE_SYSTEM_PROMPT
+    )
 
 
 def test_retrieve_docs_tool_formats_output():
@@ -901,7 +911,7 @@ def test_build_deep_agent_registers_plugin_config_tool(monkeypatch):
 
         return _Agent()
 
-    monkeypatch.setattr(deepagent_build_module, "create_deep_agent", fake_create_deep_agent)
+    monkeypatch.setattr(deepagent_main_agent_module, "create_deep_agent", fake_create_deep_agent)
 
     settings = make_settings()
     agent = build_deep_agent(

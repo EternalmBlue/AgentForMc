@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from langchain_core.tools import tool
 
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -56,20 +57,26 @@ def route_plugin_config_request(
     history: str = "",
 ) -> str:
     """Route plugin configuration questions to the dedicated subagent or main agent."""
-    context = get_plugin_config_routing_tool_context()
-    messages = [
-        {"role": "system", "content": PLUGIN_CONFIG_ROUTER_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Recent conversation:\n{history.strip() or 'No history.'}\n\n"
-                f"User question:\n{question.strip()}\n"
-            ),
-        },
-    ]
-    content = context.client.chat(messages, temperature=0.0)
-    parsed = _parse_routing_result(content, fallback_question=question)
-    return json.dumps(parsed, ensure_ascii=False)
+    with trace_operation(
+        "tool.route_plugin_config_request",
+        attributes={"component": "tool", "question.length": len(question.strip())},
+        metric_name="rag_tool_route_plugin_config_request_seconds",
+    ):
+        record_counter("rag_tool_route_plugin_config_request_requests_total")
+        context = get_plugin_config_routing_tool_context()
+        messages = [
+            {"role": "system", "content": PLUGIN_CONFIG_ROUTER_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Recent conversation:\n{history.strip() or 'No history.'}\n\n"
+                    f"User question:\n{question.strip()}\n"
+                ),
+            },
+        ]
+        content = context.client.chat(messages, temperature=0.0)
+        parsed = _parse_routing_result(content, fallback_question=question)
+        return json.dumps(parsed, ensure_ascii=False)
 
 
 def _parse_routing_result(content: str, *, fallback_question: str) -> dict[str, object]:
