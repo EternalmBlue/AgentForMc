@@ -108,6 +108,17 @@ class Settings:
     memory_recall_limit: int
     memory_min_confidence: float
     memory_consolidation_turns: int
+    plugin_semantic_agent_enabled: bool
+    plugin_semantic_mc_servers_root: Path
+    plugin_semantic_agent_model: str
+    plugin_semantic_agent_scan_on_startup: bool
+    plugin_semantic_agent_refresh_interval_seconds: int
+    plugin_semantic_agent_max_file_chars: int
+    plugin_semantic_agent_max_files_per_plugin: int
+    semantic_memory_db_dir: Path
+    semantic_memory_table_name: str
+    semantic_memory_top_k: int
+    semantic_memory_preview_chars: int
     plugin_config_db_dir: Path
     plugin_config_table_name: str
     plugin_config_top_k: int
@@ -369,6 +380,140 @@ class Settings:
                     ),
                 )
                 or "4"
+            ),
+            plugin_semantic_agent_enabled=_parse_bool(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_AGENT_ENABLED",
+                    default=str(
+                        _config_value(config, "plugin_semantic_agent", "enabled", True)
+                    ),
+                ),
+                default=True,
+            ),
+            plugin_semantic_mc_servers_root=_resolve_path(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_MC_SERVERS_ROOT",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_semantic_agent",
+                            "mc_servers_root",
+                            "mc_servers",
+                        )
+                    ),
+                )
+                or "mc_servers",
+                base_dir=config_base_dir,
+            ),
+            plugin_semantic_agent_model=str(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_AGENT_MODEL",
+                    default=str(
+                        _config_value(
+                            config, "plugin_semantic_agent", "model", "deepseek-chat"
+                        )
+                    ),
+                )
+                or "deepseek-chat"
+            ),
+            plugin_semantic_agent_scan_on_startup=_parse_bool(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_AGENT_SCAN_ON_STARTUP",
+                    default=str(
+                        _config_value(
+                            config, "plugin_semantic_agent", "scan_on_startup", True
+                        )
+                    ),
+                ),
+                default=True,
+            ),
+            plugin_semantic_agent_refresh_interval_seconds=int(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_AGENT_REFRESH_INTERVAL_SECONDS",
+                    default=str(
+                        _config_value(
+                            config,
+                            "plugin_semantic_agent",
+                            "refresh_interval_seconds",
+                            1800,
+                        )
+                    ),
+                )
+                or "1800"
+            ),
+            plugin_semantic_agent_max_file_chars=int(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_AGENT_MAX_FILE_CHARS",
+                    default=str(
+                        _config_value(
+                            config, "plugin_semantic_agent", "max_file_chars", 12000
+                        )
+                    ),
+                )
+                or "12000"
+            ),
+            plugin_semantic_agent_max_files_per_plugin=int(
+                _get_env(
+                    "RAG_PLUGIN_SEMANTIC_AGENT_MAX_FILES_PER_PLUGIN",
+                    default=str(
+                        _config_value(
+                            config, "plugin_semantic_agent", "max_files_per_plugin", 20
+                        )
+                    ),
+                )
+                or "20"
+            ),
+            semantic_memory_db_dir=_resolve_path(
+                _get_env(
+                    "RAG_SEMANTIC_MEMORY_DB_DIR",
+                    default=str(
+                        _config_value(
+                            config,
+                            "semantic_memory_store",
+                            "db_dir",
+                            "data/semantic_memory_vector_db",
+                        )
+                    ),
+                )
+                or "data/semantic_memory_vector_db",
+                base_dir=config_base_dir,
+            ),
+            semantic_memory_table_name=str(
+                _get_env(
+                    "RAG_SEMANTIC_MEMORY_TABLE_NAME",
+                    default=str(
+                        _config_value(
+                            config,
+                            "semantic_memory_store",
+                            "table_name",
+                            "semantic_memory_contexts",
+                        )
+                    ),
+                )
+                or "semantic_memory_contexts"
+            ),
+            semantic_memory_top_k=int(
+                _get_env(
+                    "RAG_SEMANTIC_MEMORY_TOP_K",
+                    default=str(
+                        _config_value(config, "semantic_memory_store", "top_k", 8)
+                    ),
+                )
+                or "8"
+            ),
+            semantic_memory_preview_chars=int(
+                _get_env(
+                    "RAG_SEMANTIC_MEMORY_PREVIEW_CHARS",
+                    default=str(
+                        _config_value(
+                            config,
+                            "semantic_memory_store",
+                            "preview_chars",
+                            220,
+                        )
+                    ),
+                )
+                or "220"
             ),
             plugin_config_db_dir=_resolve_path(
                 _get_env(

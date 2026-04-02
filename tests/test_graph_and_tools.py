@@ -13,6 +13,11 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent_for_mc.application.chat_session import RagChatSession
+from agent_for_mc.application.plugin_semantic_agent import (
+    PluginSemanticAgentService,
+    PluginSemanticExtractionResult,
+    scan_plugin_semantic_bundles,
+)
 from agent_for_mc.application.memory_service import (
     MemoryService,
     build_memory_service,
@@ -28,7 +33,12 @@ from agent_for_mc.application.deepagent_state import (
 from agent_for_mc.application.plugin_config import PluginConfigRetriever
 from agent_for_mc.application.prompts import format_history
 from agent_for_mc.application.retrieval import Retriever
-from agent_for_mc.domain.models import AnswerResult, PluginConfigDoc, RetrievedDoc
+from agent_for_mc.domain.models import (
+    AnswerResult,
+    PluginConfigDoc,
+    RetrievedDoc,
+    SemanticMemoryEntry,
+)
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.memory_store import MemoryAction, MemoryCandidate, SQLiteMemoryStore
 from agent_for_mc.infrastructure.plugin_config_vector_store import (
@@ -559,6 +569,17 @@ def make_settings() -> Settings:
         memory_recall_limit=5,
         memory_min_confidence=0.75,
         memory_consolidation_turns=4,
+        plugin_semantic_agent_enabled=False,
+        plugin_semantic_mc_servers_root=Path("mc_servers"),
+        plugin_semantic_agent_model="deepseek-chat",
+        plugin_semantic_agent_scan_on_startup=False,
+        plugin_semantic_agent_refresh_interval_seconds=1800,
+        plugin_semantic_agent_max_file_chars=12000,
+        plugin_semantic_agent_max_files_per_plugin=20,
+        semantic_memory_db_dir=Path("data/semantic_memory_vector_db"),
+        semantic_memory_table_name="semantic_memory_contexts",
+        semantic_memory_top_k=8,
+        semantic_memory_preview_chars=220,
         plugin_config_db_dir=Path("data/plugin_config_vector_db"),
         plugin_config_table_name="plugin_config_docs",
         plugin_config_top_k=6,
@@ -616,6 +637,21 @@ model = "deepseek-lite"
 [memory_maintenance_agent]
 model = "deepseek-mini"
 
+[plugin_semantic_agent]
+enabled = true
+mc_servers_root = "mc_servers"
+model = "deepseek-config"
+scan_on_startup = true
+refresh_interval_seconds = 900
+max_file_chars = 8000
+max_files_per_plugin = 12
+
+[semantic_memory_store]
+db_dir = "data/semantic_memory_vector_db"
+table_name = "semantic_memory_contexts"
+top_k = 7
+preview_chars = 180
+
 [memory]
 enabled = true
 db_path = ".cache/memory/memory.sqlite3"
@@ -655,6 +691,19 @@ summary_chars = 420
     assert settings.memory_recall_limit == 3
     assert settings.memory_min_confidence == 0.8
     assert settings.memory_consolidation_turns == 6
+    assert settings.plugin_semantic_agent_enabled is True
+    assert settings.plugin_semantic_mc_servers_root == (tmp_path / "mc_servers").resolve()
+    assert settings.plugin_semantic_agent_model == "deepseek-config"
+    assert settings.plugin_semantic_agent_scan_on_startup is True
+    assert settings.plugin_semantic_agent_refresh_interval_seconds == 900
+    assert settings.plugin_semantic_agent_max_file_chars == 8000
+    assert settings.plugin_semantic_agent_max_files_per_plugin == 12
+    assert settings.semantic_memory_db_dir == (
+        tmp_path / "data/semantic_memory_vector_db"
+    ).resolve()
+    assert settings.semantic_memory_table_name == "semantic_memory_contexts"
+    assert settings.semantic_memory_top_k == 7
+    assert settings.semantic_memory_preview_chars == 180
     assert settings.plugin_config_db_dir == (
         tmp_path / "data/plugin_config_vector_db"
     ).resolve()
@@ -755,6 +804,89 @@ def test_build_memory_service_uses_supplied_maintenance_agent(tmp_path):
 
     assert memory_service is not None
     assert memory_service.maintenance_runner.agent is maintenance_agent
+
+
+def test_scan_plugin_semantic_bundles_reads_plugin_directory(tmp_path):
+    mc_servers_root = tmp_path / "mc_servers"
+    source_root = mc_servers_root / "[1]大厅服" / "plugins"
+    plugin_dir = source_root / "MMORPG"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "config.yml").write_text("spawn-rate: 1\n", encoding="utf-8")
+    (plugin_dir / "mob.yml").write_text("mob-level: 5\n", encoding="utf-8")
+
+    bundles = scan_plugin_semantic_bundles(
+        mc_servers_root,
+        max_file_chars=1000,
+        max_files_per_plugin=10,
+    )
+
+    assert len(bundles) == 1
+    bundle = bundles[0]
+    assert bundle.server_id == "[1]大厅服"
+    assert bundle.plugin_name == "MMORPG"
+    assert {file.relative_path for file in bundle.files} == {
+        "config.yml",
+        "mob.yml",
+    }
+
+
+def test_plugin_semantic_agent_service_refresh_writes_semantic_memory(tmp_path):
+    mc_servers_root = tmp_path / "mc_servers"
+    source_root = mc_servers_root / "[1]大厅服" / "plugins"
+    plugin_dir = source_root / "MMORPG"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "config.yml").write_text("spawn-rate: 1\n", encoding="utf-8")
+    (plugin_dir / "mob.yml").write_text("mob-level: 5\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def replace_entries(self, entries, embeddings):
+            captured["entries"] = list(entries)
+            captured["embeddings"] = list(embeddings)
+
+    class FakeEmbeddingClient:
+        def embed_query(self, search_query: str):
+            return [float(len(search_query) % 3), 1.0]
+
+    class FakeMaintenanceRunner:
+        def run(self, bundle):
+            assert bundle.plugin_name == "MMORPG"
+            return PluginSemanticExtractionResult(
+                entries=[
+                    SemanticMemoryEntry(
+                        server_id=bundle.server_id,
+                        plugin_name=bundle.plugin_name,
+                        memory_type="plugin_config",
+                        relation_type="located_in",
+                        memory_text=(
+                            "[1]大厅服 的 global 作用域下，MMORPG 的主配置位于 "
+                            "plugins/MMORPG/config.yml。"
+                        ),
+                    )
+                ]
+            )
+
+    service = PluginSemanticAgentService(
+        store=FakeStore(),
+        embedding_client=FakeEmbeddingClient(),
+        maintenance_runner=FakeMaintenanceRunner(),
+        mc_servers_root=str(mc_servers_root),
+        refresh_interval_seconds=0,
+        max_file_chars=1000,
+        max_files_per_plugin=10,
+    )
+
+    service.refresh()
+    service.wait_for_idle(timeout=5)
+
+    assert "entries" in captured
+    entries = captured["entries"]
+    embeddings = captured["embeddings"]
+    assert len(entries) == 1
+    assert len(embeddings) == 1
+    assert entries[0].plugin_name == "MMORPG"
+    assert entries[0].memory_text.startswith("[1]大厅服")
 
 
 def test_build_memory_maintenance_agent_uses_configured_model(monkeypatch):

@@ -15,6 +15,7 @@ def summarize_plugin_configs(
     *,
     client: DeepSeekChatClient,
     summary_max_chars: int,
+    semantic_context: str = "",
 ) -> str:
     with trace_operation(
         "plugin_config.summarize",
@@ -22,31 +23,32 @@ def summarize_plugin_configs(
         metric_name="rag_plugin_config_summarize_seconds",
     ):
         record_counter("rag_plugin_config_summarize_requests_total")
-        if not docs:
-            return "未命中相关插件配置文件。"
+        if not docs and not semantic_context.strip():
+            return "No matching plugin configuration files were found."
 
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "你是插件配置整理助手。请根据用户问题和命中的配置片段，"
-                    "用简洁中文总结与配置相关的结论。"
-                    "只讨论配置项、默认值、开关、依赖关系、路径关系和明显冲突。"
-                    "不要编造未出现在证据中的内容；如果证据不足，请直接说明。"
+                    "You are a plugin configuration assistant. Summarize stable conclusions "
+                    "from the user question, semantic memory context, and matching config "
+                    "file excerpts. Focus on defaults, overrides, dependencies, file paths, "
+                    "and clear conflicts. Do not invent missing values."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"用户问题:\n{normalize_search_query(search_query)}\n\n"
-                    f"命中配置片段:\n{json.dumps(serialize_docs(docs), ensure_ascii=False, indent=2)}\n\n"
-                    f"请将摘要控制在 {max(summary_max_chars, 1)} 字以内。"
+                    f"User question:\n{normalize_search_query(search_query)}\n\n"
+                    f"Semantic memory:\n{semantic_context.strip() or 'No semantic memory context.'}\n\n"
+                    f"Matched config excerpts:\n{json.dumps(serialize_docs(docs), ensure_ascii=False, indent=2)}\n\n"
+                    f"Keep the summary within {max(summary_max_chars, 1)} characters."
                 ),
             },
         ]
         summary = client.chat(messages, temperature=0.1).strip()
         if not summary:
-            return "未能从配置片段中生成有效摘要。"
+            return "No useful summary could be generated from the matched config snippets."
         if summary_max_chars > 0 and len(summary) > summary_max_chars:
             summary = summary[:summary_max_chars].rstrip()
         return summary

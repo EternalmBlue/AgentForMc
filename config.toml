@@ -36,6 +36,21 @@ recall_limit = 5
 min_confidence = 0.75
 consolidation_turns = 4
 
+[plugin_semantic_agent]
+enabled = true
+mc_servers_root = "mc_servers"
+model = "deepseek-chat"
+scan_on_startup = true
+refresh_interval_seconds = 1800
+max_file_chars = 12000
+max_files_per_plugin = 20
+
+[semantic_memory_store]
+db_dir = "data/semantic_memory_vector_db"
+table_name = "semantic_memory_contexts"
+top_k = 8
+preview_chars = 220
+
 [plugin_config_store]
 db_dir = "data/plugin_config_vector_db"
 table_name = "plugin_config_docs"

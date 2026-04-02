@@ -26,6 +26,26 @@ class PluginConfigDoc:
 
 
 @dataclass(slots=True)
+class SemanticMemoryEntry:
+    server_id: str
+    plugin_name: str
+    memory_type: str
+    relation_type: str
+    memory_text: str
+
+
+@dataclass(slots=True)
+class SemanticMemoryDoc:
+    server_id: str
+    plugin_name: str
+    memory_type: str
+    relation_type: str
+    memory_text: str
+    distance: float
+    match_reason: str = "vector"
+
+
+@dataclass(slots=True)
 class AnswerResult:
     answer: str
     citations: list[RetrievedDoc] = field(default_factory=list)

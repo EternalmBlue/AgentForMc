@@ -11,6 +11,9 @@ from agent_for_mc.infrastructure.plugin_config_vector_store import (
     LancePluginConfigVectorStore,
 )
 from agent_for_mc.infrastructure.ranker import BceRanker
+from agent_for_mc.infrastructure.semantic_memory_vector_store import (
+    LanceSemanticMemoryVectorStore,
+)
 from agent_for_mc.interfaces.tools.plugin_config import (
     PluginConfigToolContext,
     configure_plugin_config_tool,
@@ -35,6 +38,7 @@ from agent_for_mc.interfaces.tools.retrieval import (
     configure_retrieve_docs_tool,
     configure_select_retrieval_tool,
 )
+from agent_for_mc.application.semantic_memory import SemanticMemoryRetriever
 from agent_for_mc.interfaces.tools.routing import (
     PlanningToolContext,
     PluginConfigRoutingToolContext,
@@ -86,6 +90,11 @@ def configure_deepagent_dependencies(
         settings.plugin_config_table_name,
         expected_embedding_dimension=settings.expected_embedding_dimension,
     )
+    semantic_memory_vector_store = LanceSemanticMemoryVectorStore(
+        settings.semantic_memory_db_dir,
+        settings.semantic_memory_table_name,
+        expected_embedding_dimension=settings.expected_embedding_dimension,
+    )
     configure_plugin_config_tool(
         PluginConfigToolContext(
             retriever=PluginConfigRetriever(
@@ -93,8 +102,13 @@ def configure_deepagent_dependencies(
                 embedding_client,
                 ranker=ranker,
             ),
+            semantic_retriever=SemanticMemoryRetriever(
+                semantic_memory_vector_store,
+                embedding_client,
+            ),
             summarizer_client=planning_client,
             top_k=settings.plugin_config_top_k,
+            semantic_top_k=settings.semantic_memory_top_k,
             preview_chars=settings.plugin_config_preview_chars,
             summary_max_chars=settings.plugin_config_summary_chars,
         )
