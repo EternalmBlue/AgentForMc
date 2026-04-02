@@ -841,9 +841,17 @@ def test_plugin_semantic_agent_service_refresh_writes_semantic_memory(tmp_path):
     captured: dict[str, object] = {}
 
     class FakeStore:
-        def replace_entries(self, entries, embeddings):
+        def __init__(self):
+            self.upserts: list[tuple[str, str, list[SemanticMemoryEntry], list[list[float]]]] = []
+            self.deletes: list[tuple[str, str]] = []
+
+        def upsert_bundle_entries(self, *, server_id, plugin_name, entries, embeddings):
+            self.upserts.append((server_id, plugin_name, list(entries), list(embeddings)))
             captured["entries"] = list(entries)
             captured["embeddings"] = list(embeddings)
+
+        def delete_bundle(self, *, server_id, plugin_name):
+            self.deletes.append((server_id, plugin_name))
 
     class FakeEmbeddingClient:
         def embed_query(self, search_query: str):
@@ -872,6 +880,7 @@ def test_plugin_semantic_agent_service_refresh_writes_semantic_memory(tmp_path):
         embedding_client=FakeEmbeddingClient(),
         maintenance_runner=FakeMaintenanceRunner(),
         mc_servers_root=str(mc_servers_root),
+        manifest_path=tmp_path / "manifest.json",
         refresh_interval_seconds=0,
         max_file_chars=1000,
         max_files_per_plugin=10,
@@ -887,6 +896,121 @@ def test_plugin_semantic_agent_service_refresh_writes_semantic_memory(tmp_path):
     assert len(embeddings) == 1
     assert entries[0].plugin_name == "MMORPG"
     assert entries[0].memory_text.startswith("[1]大厅服")
+
+
+def test_plugin_semantic_agent_service_refresh_is_incremental(tmp_path):
+    mc_servers_root = tmp_path / "mc_servers"
+    first_plugin_dir = mc_servers_root / "[1]大厅服" / "plugins" / "MMORPG"
+    first_plugin_dir.mkdir(parents=True)
+    first_config = first_plugin_dir / "config.yml"
+    first_config.write_text("spawn-rate: 1\n", encoding="utf-8")
+
+    captured: dict[str, list[tuple[str, str]]] = {"upserts": [], "deletes": []}
+
+    class FakeStore:
+        def upsert_bundle_entries(self, *, server_id, plugin_name, entries, embeddings):
+            captured["upserts"].append((server_id, plugin_name))
+
+        def delete_bundle(self, *, server_id, plugin_name):
+            captured["deletes"].append((server_id, plugin_name))
+
+    class FakeEmbeddingClient:
+        def embed_query(self, search_query: str):
+            return [float(len(search_query) % 3), 1.0]
+
+    class FakeMaintenanceRunner:
+        def run(self, bundle):
+            return PluginSemanticExtractionResult(
+                entries=[
+                    SemanticMemoryEntry(
+                        server_id=bundle.server_id,
+                        plugin_name=bundle.plugin_name,
+                        memory_type="plugin_config",
+                        relation_type="located_in",
+                        memory_text=f"{bundle.server_id} / {bundle.plugin_name}",
+                    )
+                ]
+            )
+
+    service = PluginSemanticAgentService(
+        store=FakeStore(),
+        embedding_client=FakeEmbeddingClient(),
+        maintenance_runner=FakeMaintenanceRunner(),
+        mc_servers_root=str(mc_servers_root),
+        manifest_path=tmp_path / "manifest.json",
+        refresh_interval_seconds=0,
+        max_file_chars=1000,
+        max_files_per_plugin=10,
+    )
+
+    service.refresh()
+    service.wait_for_idle(timeout=5)
+    assert captured["upserts"] == [("[1]大厅服", "MMORPG")]
+    assert captured["deletes"] == []
+
+    service.refresh()
+    service.wait_for_idle(timeout=5)
+    assert captured["upserts"] == [("[1]大厅服", "MMORPG")]
+
+    second_plugin_dir = mc_servers_root / "[2]生存服" / "plugins" / "AuthMe"
+    second_plugin_dir.mkdir(parents=True)
+    (second_plugin_dir / "config.yml").write_text("timeout: 30\n", encoding="utf-8")
+
+    service.refresh()
+    service.wait_for_idle(timeout=5)
+    assert ("[2]生存服", "AuthMe") in captured["upserts"]
+
+
+def test_plugin_semantic_agent_service_refresh_full_forces_rebuild(tmp_path):
+    mc_servers_root = tmp_path / "mc_servers"
+    plugin_dir = mc_servers_root / "[1]大厅服" / "plugins" / "MMORPG"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "config.yml").write_text("spawn-rate: 1\n", encoding="utf-8")
+
+    captured: dict[str, list[tuple[str, str]]] = {"upserts": [], "deletes": []}
+
+    class FakeStore:
+        def upsert_bundle_entries(self, *, server_id, plugin_name, entries, embeddings):
+            captured["upserts"].append((server_id, plugin_name))
+
+        def delete_bundle(self, *, server_id, plugin_name):
+            captured["deletes"].append((server_id, plugin_name))
+
+    class FakeEmbeddingClient:
+        def embed_query(self, search_query: str):
+            return [float(len(search_query) % 3), 1.0]
+
+    class FakeMaintenanceRunner:
+        def run(self, bundle):
+            return PluginSemanticExtractionResult(
+                entries=[
+                    SemanticMemoryEntry(
+                        server_id=bundle.server_id,
+                        plugin_name=bundle.plugin_name,
+                        memory_type="plugin_config",
+                        relation_type="located_in",
+                        memory_text=f"{bundle.server_id} / {bundle.plugin_name}",
+                    )
+                ]
+            )
+
+    service = PluginSemanticAgentService(
+        store=FakeStore(),
+        embedding_client=FakeEmbeddingClient(),
+        maintenance_runner=FakeMaintenanceRunner(),
+        mc_servers_root=str(mc_servers_root),
+        manifest_path=tmp_path / "manifest.json",
+        refresh_interval_seconds=0,
+        max_file_chars=1000,
+        max_files_per_plugin=10,
+    )
+
+    service.refresh()
+    service.wait_for_idle(timeout=5)
+    service.refresh_full()
+    service.wait_for_idle(timeout=5)
+
+    assert captured["upserts"] == [("[1]大厅服", "MMORPG"), ("[1]大厅服", "MMORPG")]
 
 
 def test_build_memory_maintenance_agent_uses_configured_model(monkeypatch):
@@ -989,6 +1113,34 @@ def test_build_session_warmups_ranker(monkeypatch):
 
     assert isinstance(session, RagChatSession)
     assert warmed == ["maidalun1020/bce-reranker-base_v1"]
+
+
+def test_build_session_does_not_auto_refresh_plugin_semantic_service(monkeypatch):
+    class FakePluginSemanticService:
+        def __init__(self):
+            self.refresh_calls = 0
+
+        def refresh(self) -> None:
+            self.refresh_calls += 1
+
+    class FakeDeepAgent:
+        def invoke(self, payload):
+            return {"messages": [AIMessage(content="ok")]}
+
+    fake_service = FakePluginSemanticService()
+
+    monkeypatch.setattr(cli_module, "build_memory_maintenance_agent", lambda *, settings: object())
+    monkeypatch.setattr(cli_module, "build_memory_service", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli_module, "build_plugin_semantic_service", lambda settings: fake_service)
+    monkeypatch.setattr(cli_module, "build_deep_agent", lambda **kwargs: FakeDeepAgent())
+
+    settings = replace(make_settings(), plugin_semantic_agent_enabled=True)
+    session = cli_module.build_session(settings, memory_scope_id="test-user")
+
+    assert session.has_plugin_semantic_service() is True
+    assert fake_service.refresh_calls == 0
+    assert session.start_plugin_semantic_refresh() is True
+    assert fake_service.refresh_calls == 1
 
 
 def test_payload_helper_returns_docs_and_summary():

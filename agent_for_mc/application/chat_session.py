@@ -51,6 +51,15 @@ class RagChatSession:
         if self._plugin_semantic_service is not None:
             self._plugin_semantic_service.close()
 
+    def has_plugin_semantic_service(self) -> bool:
+        return self._plugin_semantic_service is not None
+
+    def start_plugin_semantic_refresh(self) -> bool:
+        if self._plugin_semantic_service is None:
+            return False
+        self._plugin_semantic_service.refresh()
+        return True
+
     def ask(self, question: str) -> AnswerResult:
         with trace_operation(
             "session.ask",

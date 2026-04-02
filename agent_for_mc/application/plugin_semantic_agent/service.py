@@ -9,9 +9,14 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any
 
+from agent_for_mc.application.plugin_semantic_agent.manifest import (
+    PluginSemanticManifest,
+)
 from agent_for_mc.application.plugin_semantic_agent.scanner import (
     PluginSemanticBundle,
-    scan_plugin_semantic_bundles,
+    PluginSemanticBundleSpec,
+    discover_plugin_semantic_bundle_specs,
+    load_plugin_semantic_bundle,
 )
 from agent_for_mc.domain.models import SemanticMemoryEntry
 from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
@@ -80,6 +85,7 @@ class PluginSemanticAgentService:
     embedding_client: JinaEmbeddingClient
     maintenance_runner: PluginSemanticExtractionRunner
     mc_servers_root: str
+    manifest_path: Path
     refresh_interval_seconds: int
     max_file_chars: int
     max_files_per_plugin: int
@@ -106,12 +112,18 @@ class PluginSemanticAgentService:
             self._refresh_thread.start()
 
     def refresh(self) -> None:
+        self._submit_refresh(full=False)
+
+    def refresh_full(self) -> None:
+        self._submit_refresh(full=True)
+
+    def _submit_refresh(self, *, full: bool) -> None:
         if self._closed:
             return
         with self._lock:
             if self._inflight is not None and not self._inflight.done():
                 return
-            future = self._executor.submit(self._run_refresh)
+            future = self._executor.submit(self._run_refresh, full)
             self._inflight = future
             future.add_done_callback(self._on_refresh_done)
 
@@ -147,34 +159,88 @@ class PluginSemanticAgentService:
             if self._inflight is future:
                 self._inflight = None
 
-    def _run_refresh(self) -> None:
+    def _run_refresh(self, full: bool) -> None:
         with trace_operation(
             "plugin_semantic_agent.refresh",
-            attributes={"component": "plugin_semantic_agent"},
+            attributes={
+                "component": "plugin_semantic_agent",
+                "mode": "full" if full else "incremental",
+            },
             metric_name="rag_plugin_semantic_agent_refresh_seconds",
         ):
             try:
-                bundles = scan_plugin_semantic_bundles(
+                manifest = PluginSemanticManifest.load(self.manifest_path)
+                specs = discover_plugin_semantic_bundle_specs(
                     Path(self.mc_servers_root),
-                    max_file_chars=self.max_file_chars,
                     max_files_per_plugin=self.max_files_per_plugin,
                 )
-                entries: list[SemanticMemoryEntry] = []
-                for bundle in bundles:
-                    result = self.maintenance_runner.run(bundle)
-                    entries.extend(
-                        _dedupe_entries(
-                            _normalize_entries(result.entries, bundle=bundle)
-                        )
-                    )
+                current_keys = {(spec.server_id, spec.plugin_name) for spec in specs}
 
-                embeddings = [
-                    self.embedding_client.embed_query(entry.memory_text)
-                    for entry in entries
-                ]
-                self.store.replace_entries(entries, embeddings)
+                removed_keys = sorted(manifest.keys() - current_keys)
+                for server_id, plugin_name in removed_keys:
+                    self.store.delete_bundle(server_id=server_id, plugin_name=plugin_name)
+                    manifest.remove(server_id, plugin_name)
+
+                spec_map: dict[tuple[str, str], PluginSemanticBundleSpec] = {
+                    (spec.server_id, spec.plugin_name): spec for spec in specs
+                }
+                for server_id, plugin_name in sorted(current_keys):
+                    spec = spec_map[(server_id, plugin_name)]
+                    previous_state = manifest.get(server_id, plugin_name)
+                    if not full and previous_state is not None and previous_state.fingerprint == spec.fingerprint:
+                        continue
+                    try:
+                        self._refresh_bundle(manifest, spec)
+                    except Exception as exc:  # pragma: no cover - background failure
+                        LOGGER.warning(
+                            "Plugin semantic bundle refresh failed: %s / %s: %s",
+                            server_id,
+                            plugin_name,
+                            exc,
+                            exc_info=True,
+                        )
+
+                try:
+                    manifest.save(self.manifest_path)
+                except Exception as exc:  # pragma: no cover - background failure
+                    LOGGER.warning(
+                        "Plugin semantic manifest save failed: %s",
+                        exc,
+                        exc_info=True,
+                    )
             except Exception as exc:  # pragma: no cover - background failure
                 LOGGER.warning("Plugin semantic agent refresh failed: %s", exc, exc_info=True)
+
+    def _refresh_bundle(
+        self,
+        manifest: PluginSemanticManifest,
+        spec: PluginSemanticBundleSpec,
+    ) -> None:
+        bundle = load_plugin_semantic_bundle(
+            spec,
+            max_file_chars=self.max_file_chars,
+        )
+        result = self.maintenance_runner.run(bundle)
+        entries = _dedupe_entries(_normalize_entries(result.entries, bundle=bundle))
+
+        if entries:
+            embeddings = [
+                self.embedding_client.embed_query(entry.memory_text)
+                for entry in entries
+            ]
+            self.store.upsert_bundle_entries(
+                server_id=bundle.server_id,
+                plugin_name=bundle.plugin_name,
+                entries=entries,
+                embeddings=embeddings,
+            )
+        else:
+            self.store.delete_bundle(
+                server_id=bundle.server_id,
+                plugin_name=bundle.plugin_name,
+            )
+
+        manifest.set(bundle.server_id, bundle.plugin_name, spec.fingerprint)
 
     def _run_periodic_refresh(self) -> None:
         while not self._stop_event.wait(self.refresh_interval_seconds):
@@ -212,6 +278,7 @@ def build_plugin_semantic_service(
         embedding_client=JinaEmbeddingClient(settings),
         maintenance_runner=PluginSemanticExtractionRunner(agent=maintenance_agent),
         mc_servers_root=str(mc_servers_root),
+        manifest_path=settings.semantic_memory_db_dir / "plugin_semantic_manifest.json",
         refresh_interval_seconds=settings.plugin_semantic_agent_refresh_interval_seconds,
         max_file_chars=settings.plugin_semantic_agent_max_file_chars,
         max_files_per_plugin=settings.plugin_semantic_agent_max_files_per_plugin,

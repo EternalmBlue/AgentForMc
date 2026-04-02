@@ -7,7 +7,7 @@ import lancedb
 import pyarrow as pa
 
 from agent_for_mc.domain.errors import StartupValidationError
-from agent_for_mc.domain.models import SemanticMemoryDoc, SemanticMemoryEntry
+from agent_for_mc.domain.models import SemanticMemoryDoc, SemanticMemoryEntry, VectorStoreStats
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
@@ -62,8 +62,9 @@ class LanceSemanticMemoryVectorStore:
         self._db = None
         self._table = None
         self._rows: list[dict] | None = None
+        self._stats: VectorStoreStats | None = None
 
-    def validate(self) -> None:
+    def validate(self) -> VectorStoreStats:
         with trace_operation(
             "semantic_memory_vector_store.validate",
             attributes={
@@ -73,25 +74,36 @@ class LanceSemanticMemoryVectorStore:
             metric_name="rag_semantic_memory_vector_store_validate_seconds",
         ):
             record_counter("rag_semantic_memory_vector_store_validate_requests_total")
+            if self._stats is not None:
+                return self._stats
+
             if not self._db_dir.exists():
-                raise StartupValidationError(
-                    f"语义记忆向量库目录不存在: {self._db_dir}"
+                self._rows = []
+                self._stats = VectorStoreStats(
+                    db_dir=self._db_dir,
+                    table_name=self._table_name,
+                    record_count=0,
+                    embedding_dimension=self._expected_embedding_dimension,
                 )
+                return self._stats
 
-            try:
-                self._db = lancedb.connect(str(self._db_dir))
-                self._table = self._db.open_table(self._table_name)
-            except Exception as exc:
-                raise StartupValidationError(
-                    f"无法打开语义记忆表 {self._table_name}: {exc}"
-                ) from exc
+            self._db = lancedb.connect(str(self._db_dir))
+            table = self._open_table()
+            if table is None:
+                self._rows = []
+                self._stats = VectorStoreStats(
+                    db_dir=self._db_dir,
+                    table_name=self._table_name,
+                    record_count=0,
+                    embedding_dimension=self._expected_embedding_dimension,
+                )
+                return self._stats
 
+            self._table = table
             try:
                 arrow_table = self._table.to_arrow()
             except Exception as exc:
-                raise StartupValidationError(
-                    f"读取语义记忆表失败: {exc}"
-                ) from exc
+                raise StartupValidationError(f"读取语义记忆表失败: {exc}") from exc
 
             schema = arrow_table.schema
             actual_fields = {field.name for field in schema}
@@ -112,38 +124,61 @@ class LanceSemanticMemoryVectorStore:
                 )
 
             self._rows = arrow_table.to_pylist()
+            self._stats = VectorStoreStats(
+                db_dir=self._db_dir,
+                table_name=self._table_name,
+                record_count=len(self._rows),
+                embedding_dimension=embedding_field.type.list_size,
+            )
+            return self._stats
 
-    def replace_entries(
+    def upsert_bundle_entries(
         self,
+        *,
+        server_id: str,
+        plugin_name: str,
         entries: list[SemanticMemoryEntry],
         embeddings: list[list[float]],
     ) -> None:
         if len(entries) != len(embeddings):
-            raise ValueError("entries 与 embeddings 数量不一致")
+            raise ValueError("entries 和 embeddings 数量不一致。")
+        if not entries:
+            self.delete_bundle(server_id=server_id, plugin_name=plugin_name)
+            return
 
         self._db_dir.mkdir(parents=True, exist_ok=True)
-        rows = [
-            {
-                "server_id": entry.server_id,
-                "plugin_name": entry.plugin_name,
-                "memory_type": entry.memory_type,
-                "relation_type": entry.relation_type,
-                "memory_text": entry.memory_text,
-                "embedding": embedding,
-            }
-            for entry, embedding in zip(entries, embeddings, strict=True)
-        ]
-
-        schema = self._schema()
         self._db = lancedb.connect(str(self._db_dir))
-        self._db.drop_table(self._table_name, ignore_missing=True)
-        self._table = self._db.create_table(
-            self._table_name,
-            schema=schema,
-            data=rows,
-            mode="create",
+        self._table = self._open_table()
+
+        rows = _build_rows(entries, embeddings)
+        self.delete_bundle(server_id=server_id, plugin_name=plugin_name)
+        if self._table is None:
+            self._table = self._db.create_table(
+                self._table_name,
+                schema=self._schema(),
+                data=rows,
+                mode="create",
+            )
+        else:
+            self._table.add(pa.Table.from_pylist(rows, schema=self._schema()))
+        self._invalidate_cache()
+
+    def delete_bundle(self, *, server_id: str, plugin_name: str) -> None:
+        if not self._db_dir.exists():
+            return
+        self._db = lancedb.connect(str(self._db_dir))
+        self._table = self._open_table()
+        if self._table is None:
+            return
+        where_clause = (
+            f"server_id = '{_escape_sql_literal(server_id)}' AND "
+            f"plugin_name = '{_escape_sql_literal(plugin_name)}'"
         )
-        self._rows = rows
+        try:
+            self._table.delete(where_clause)
+        except Exception:
+            return
+        self._invalidate_cache()
 
     def find_name_matches(self, search_query: str) -> list[SemanticMemoryDoc]:
         with trace_operation(
@@ -156,6 +191,8 @@ class LanceSemanticMemoryVectorStore:
         ):
             record_counter("rag_semantic_memory_vector_store_name_match_requests_total")
             rows = self._load_rows()
+            if not rows:
+                return []
             normalized_query = search_query.lower()
             matches: list[_NameMatch] = []
 
@@ -201,8 +238,10 @@ class LanceSemanticMemoryVectorStore:
             metric_name="rag_semantic_memory_vector_store_search_seconds",
         ):
             record_counter("rag_semantic_memory_vector_store_search_requests_total")
-            self.validate()
-            query = self._table.search(embedding)
+            table = self._ensure_table_for_search()
+            if table is None:
+                return []
+            query = table.search(embedding)
             where_clause = self._build_where_clause(
                 server_id=server_id,
                 plugin_name=plugin_name,
@@ -226,8 +265,26 @@ class LanceSemanticMemoryVectorStore:
     def _load_rows(self) -> list[dict]:
         if self._rows is not None:
             return self._rows
-        self.validate()
+        stats = self.validate()
+        if stats.record_count == 0:
+            return []
         return self._rows or []
+
+    def _ensure_table_for_search(self):
+        if self._db_dir.exists():
+            self._db = lancedb.connect(str(self._db_dir))
+            self._table = self._open_table()
+        return self._table
+
+    def _open_table(self):
+        try:
+            return self._db.open_table(self._table_name)
+        except Exception:
+            return None
+
+    def _invalidate_cache(self) -> None:
+        self._rows = None
+        self._stats = None
 
     def _row_to_doc(
         self,
@@ -273,6 +330,23 @@ class LanceSemanticMemoryVectorStore:
         if plugin_name:
             clauses.append(f"plugin_name = '{_escape_sql_literal(plugin_name)}'")
         return " AND ".join(clauses)
+
+
+def _build_rows(
+    entries: list[SemanticMemoryEntry],
+    embeddings: list[list[float]],
+) -> list[dict]:
+    return [
+        {
+            "server_id": entry.server_id,
+            "plugin_name": entry.plugin_name,
+            "memory_type": entry.memory_type,
+            "relation_type": entry.relation_type,
+            "memory_text": entry.memory_text,
+            "embedding": embedding,
+        }
+        for entry, embedding in zip(entries, embeddings, strict=True)
+    ]
 
 
 def _escape_sql_literal(value: str) -> str:

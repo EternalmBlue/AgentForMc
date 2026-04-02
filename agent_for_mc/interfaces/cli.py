@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from agent_for_mc.application.chat_session import RagChatSession
-from agent_for_mc.application.plugin_semantic_agent import build_plugin_semantic_service
 from agent_for_mc.application.memory_service import build_memory_service
+from agent_for_mc.application.plugin_semantic_agent import build_plugin_semantic_service
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.errors import ConfigurationError, RagForMcError, StartupValidationError
 from agent_for_mc.domain.models import AnswerResult
@@ -40,11 +40,6 @@ def build_session(settings: Settings, *, memory_scope_id: str) -> RagChatSession
         maintenance_agent=memory_maintenance_agent,
     )
     plugin_semantic_service = build_plugin_semantic_service(settings)
-    if (
-        plugin_semantic_service is not None
-        and settings.plugin_semantic_agent_scan_on_startup
-    ):
-        plugin_semantic_service.refresh()
     deep_agent = build_deep_agent(
         settings=settings,
         retriever=retriever,
@@ -78,6 +73,14 @@ def main() -> int:
             f"table={stats.table_name}, records={stats.record_count}, "
             f"embedding_dim={stats.embedding_dimension}"
         )
+        if session.has_plugin_semantic_service():
+            if _prompt_plugin_semantic_refresh(
+                default_yes=settings.plugin_semantic_agent_scan_on_startup
+            ):
+                if session.start_plugin_semantic_refresh():
+                    print("Plugin semantic vector build started in background.")
+            else:
+                print("Plugin semantic vector build skipped.")
         print("Commands: exit | clear")
 
         while True:
@@ -153,3 +156,26 @@ def _prompt_memory_scope_id() -> str:
             print("记忆作用域ID 不能为空。")
             continue
         return scope_id
+
+
+def _prompt_plugin_semantic_refresh(*, default_yes: bool) -> bool:
+    suffix = "[Y/n]" if default_yes else "[y/N]"
+    while True:
+        try:
+            answer = input(
+                "是否开始从 mc_servers 目录后台并行构建向量数据库 "
+                f"{suffix}: "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已退出。")
+            raise SystemExit(0)
+
+        if not answer:
+            return default_yes
+
+        lowered = answer.lower()
+        if lowered in {"y", "yes", "是", "好", "ok", "start"}:
+            return True
+        if lowered in {"n", "no", "否", "不", "skip"}:
+            return False
+        print("请输入 y 或 n。")
