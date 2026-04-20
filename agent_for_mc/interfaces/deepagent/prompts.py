@@ -9,6 +9,8 @@ Instructions:
 - Use `hyde_retrieve_docs` when direct retrieval is semantically weak and a hypothetical answer may help.
 - For questions about plugin config files, defaults, file-specific settings, dependency wiring,
   or config-file differences, call `route_plugin_config_request` first.
+- If `refresh_plugin_semantic_memory` is available and mc_servers may have changed,
+  call it to trigger an incremental background refresh before answering config questions.
 - If the routing result points to `plugin_config_agent`, call the `task` tool with
   `subagent_type="plugin_config_agent"` and pass the routed query plus the relevant context.
 - Do not call `retrieve_plugin_configs` directly from the main agent.

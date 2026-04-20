@@ -95,6 +95,11 @@ from agent_for_mc.interfaces.tools.plugin_config import (
     configure_plugin_config_tool,
     retrieve_plugin_configs,
 )
+from agent_for_mc.interfaces.tools.memory import (
+    PluginSemanticRefreshToolContext,
+    configure_plugin_semantic_refresh_tool,
+    refresh_plugin_semantic_memory,
+)
 
 
 class FakeVectorStore:
@@ -1120,8 +1125,9 @@ def test_build_session_does_not_auto_refresh_plugin_semantic_service(monkeypatch
         def __init__(self):
             self.refresh_calls = 0
 
-        def refresh(self) -> None:
+        def refresh(self) -> bool:
             self.refresh_calls += 1
+            return True
 
     class FakeDeepAgent:
         def invoke(self, payload):
@@ -1215,6 +1221,80 @@ def test_build_deep_agent_registers_plugin_config_tool(monkeypatch):
     plugin_subagent_tool_names = [getattr(tool, "name", "") for tool in plugin_subagent["tools"]]
     assert plugin_subagent_tool_names == ["retrieve_plugin_configs"]
     assert agent is not None
+
+
+def test_build_deep_agent_registers_plugin_semantic_refresh_tool(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakePluginSemanticService:
+        def request_refresh_status(self, *, full: bool = False) -> str:
+            return "started"
+
+    def fake_create_deep_agent(**kwargs):
+        captured["tools"] = kwargs["tools"]
+        captured["system_prompt"] = kwargs["system_prompt"]
+
+        class _Agent:
+            def invoke(self, payload):
+                return {"messages": [AIMessage(content="ok")]}
+
+        return _Agent()
+
+    monkeypatch.setattr(deepagent_main_agent_module, "create_deep_agent", fake_create_deep_agent)
+
+    settings = replace(make_settings(), plugin_semantic_agent_enabled=True)
+    build_deep_agent(
+        settings=settings,
+        retriever=Retriever(FakeVectorStore(), FakeEmbeddingClient()),
+        plugin_semantic_service=FakePluginSemanticService(),
+    )
+
+    tool_names = [getattr(tool, "name", "") for tool in captured["tools"]]
+    assert "refresh_plugin_semantic_memory" in tool_names
+    assert "refresh_plugin_semantic_memory" in str(captured["system_prompt"])
+
+
+def test_refresh_plugin_semantic_memory_tool_starts_incremental_refresh():
+    class FakePluginSemanticService:
+        def __init__(self):
+            self.calls: list[bool] = []
+            self.mc_servers_root = "F:/AgentForMc/mc_servers"
+
+        def request_refresh_status(self, *, full: bool = False) -> str:
+            self.calls.append(full)
+            return "started"
+
+    service = FakePluginSemanticService()
+    configure_plugin_semantic_refresh_tool(
+        PluginSemanticRefreshToolContext(service=service)
+    )
+
+    output = refresh_plugin_semantic_memory.invoke({})
+    data = json.loads(output)
+
+    assert service.calls == [False]
+    assert data["status"] == "started"
+    assert data["mode"] == "incremental"
+    assert data["mc_servers_root"] == "F:/AgentForMc/mc_servers"
+
+
+def test_refresh_plugin_semantic_memory_tool_reports_inflight_refresh():
+    class FakePluginSemanticService:
+        def __init__(self):
+            self.mc_servers_root = "F:/AgentForMc/mc_servers"
+
+        def request_refresh_status(self, *, full: bool = False) -> str:
+            return "already_running"
+
+    configure_plugin_semantic_refresh_tool(
+        PluginSemanticRefreshToolContext(service=FakePluginSemanticService())
+    )
+
+    output = refresh_plugin_semantic_memory.invoke({})
+    data = json.loads(output)
+
+    assert data["status"] == "already_running"
+    assert "already running" in data["message"]
 
 
 def test_plugin_config_vector_store_validation_errors(tmp_path, monkeypatch):

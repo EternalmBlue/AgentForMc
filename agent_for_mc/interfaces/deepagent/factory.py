@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from langchain_deepseek import ChatDeepSeek
 
 from agent_for_mc.application.plugin_config import PluginConfigRetriever
@@ -13,6 +15,10 @@ from agent_for_mc.infrastructure.plugin_config_vector_store import (
 from agent_for_mc.infrastructure.ranker import BceRanker
 from agent_for_mc.infrastructure.semantic_memory_vector_store import (
     LanceSemanticMemoryVectorStore,
+)
+from agent_for_mc.interfaces.tools.memory import (
+    PluginSemanticRefreshToolContext,
+    configure_plugin_semantic_refresh_tool,
 )
 from agent_for_mc.interfaces.tools.plugin_config import (
     PluginConfigToolContext,
@@ -46,6 +52,9 @@ from agent_for_mc.interfaces.tools.routing import (
     configure_plugin_config_routing_tool,
 )
 
+if TYPE_CHECKING:
+    from agent_for_mc.application.plugin_semantic_agent import PluginSemanticAgentService
+
 
 def build_chat_model(*, settings: Settings, model_name: str) -> ChatDeepSeek:
     return ChatDeepSeek(
@@ -62,6 +71,7 @@ def configure_deepagent_dependencies(
     settings: Settings,
     retriever: Retriever,
     ranker: BceRanker | None = None,
+    plugin_semantic_service: PluginSemanticAgentService | None = None,
 ) -> None:
     configure_observability()
 
@@ -84,6 +94,10 @@ def configure_deepagent_dependencies(
     configure_planning_tool(PlanningToolContext(client=planning_client))
     configure_judge_retrieval_freshness_tool(JudgeRetrievalFreshnessToolContext())
     configure_judge_answer_quality_tool(JudgeAnswerQualityToolContext())
+    if plugin_semantic_service is not None:
+        configure_plugin_semantic_refresh_tool(
+            PluginSemanticRefreshToolContext(service=plugin_semantic_service)
+        )
 
     plugin_config_vector_store = LancePluginConfigVectorStore(
         settings.plugin_config_db_dir,

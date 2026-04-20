@@ -44,6 +44,7 @@ def build_session(settings: Settings, *, memory_scope_id: str) -> RagChatSession
         settings=settings,
         retriever=retriever,
         ranker=ranker,
+        plugin_semantic_service=plugin_semantic_service,
     )
     return RagChatSession(
         settings=settings,

@@ -111,21 +111,25 @@ class PluginSemanticAgentService:
             )
             self._refresh_thread.start()
 
-    def refresh(self) -> None:
-        self._submit_refresh(full=False)
+    def refresh(self) -> bool:
+        return self._submit_refresh(full=False) == "started"
 
-    def refresh_full(self) -> None:
-        self._submit_refresh(full=True)
+    def refresh_full(self) -> bool:
+        return self._submit_refresh(full=True) == "started"
 
-    def _submit_refresh(self, *, full: bool) -> None:
+    def request_refresh_status(self, *, full: bool = False) -> str:
+        return self._submit_refresh(full=full)
+
+    def _submit_refresh(self, *, full: bool) -> str:
         if self._closed:
-            return
+            return "closed"
         with self._lock:
             if self._inflight is not None and not self._inflight.done():
-                return
+                return "already_running"
             future = self._executor.submit(self._run_refresh, full)
             self._inflight = future
             future.add_done_callback(self._on_refresh_done)
+            return "started"
 
     def wait_for_idle(self, timeout: float | None = None) -> None:
         remaining = timeout
