@@ -1915,6 +1915,49 @@ def test_rag_chat_session_uses_deep_agent():
     assert isinstance(session._history[-1], AIMessage)
 
 
+def test_rag_chat_session_reports_coarse_progress_stages():
+    progress: list[tuple[str, str]] = []
+    session = RagChatSession(
+        settings=make_settings(),
+        vector_store=FakeVectorStore(),
+        deep_agent=FakeDeepAgent(),
+    )
+
+    result = session.ask(
+        "plugin question",
+        progress_callback=lambda stage, message: progress.append((stage, message)),
+    )
+
+    assert result.answer == "deep answer"
+    stages = [stage for stage, _ in progress]
+    assert stages[0] == "started"
+    assert "agent_running" in stages
+    assert "answer_ready" in stages
+    assert stages[-1] == "completed"
+
+
+def test_retrieval_tool_reports_progress_stages():
+    progress: list[tuple[str, str]] = []
+    start_turn_context(progress_callback=lambda stage, message: progress.append((stage, message)))
+    try:
+        docs, formatted = build_retrieve_docs_payload(
+            "homes",
+            context=RetrieveDocsToolContext(
+                retriever=Retriever(FakeVectorStore(), FakeEmbeddingClient()),
+                top_k=2,
+                citation_preview_chars=100,
+            ),
+        )
+    finally:
+        clear_turn_context()
+
+    assert docs
+    assert "PluginA" in formatted
+    stages = [stage for stage, _ in progress]
+    assert "retrieval" in stages
+    assert "retrieval_ready" in stages
+
+
 def test_rag_chat_session_exposes_server_plugins_to_tools():
     class PluginAwareDeepAgent:
         def __init__(self):

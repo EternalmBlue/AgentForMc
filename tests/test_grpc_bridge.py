@@ -13,7 +13,9 @@ from agent_for_mc.interfaces.grpc import agent_bridge_pb2, agent_bridge_pb2_grpc
 from agent_for_mc.interfaces.grpc.runtime import (
     AgentBridgeRuntime,
     AskCommand,
+    AskProgress,
     AskReply,
+    AskStreamEvent,
     CommitSyncReply,
     FailedPreconditionError,
     ManifestEntry,
@@ -47,6 +49,26 @@ class FakeRuntime:
             answer="test answer",
             citations_summary="Essentials(vector)",
             backend_trace_id="trace-123",
+        )
+
+    def ask_stream(self, command: AskCommand):
+        self.seen_ask_command = command
+        yield AskStreamEvent(
+            progress=AskProgress(
+                request_id=command.request_id,
+                stage="retrieval",
+                message="Searching docs",
+                elapsed_ms=250,
+                sequence=1,
+            )
+        )
+        yield AskStreamEvent(
+            reply=AskReply(
+                request_id=command.request_id,
+                answer="stream answer",
+                citations_summary="Essentials(vector)",
+                backend_trace_id="trace-stream",
+            )
         )
 
     def prepare_sync(self, *, server_id: str, server_instance_id: str, manifest):
@@ -242,6 +264,7 @@ def test_grpc_probe_returns_ack_without_authorization():
     assert response.ack is True
     assert response.backend_name == "AgentForMc"
     assert response.protocol_version == 1
+    assert "ask_stream_progress" in response.capabilities
     assert runtime.seen_probe_identity == ("lobby-1", "instance-1")
 
 
@@ -301,6 +324,36 @@ def test_grpc_service_maps_ask_request_and_response():
     assert runtime.seen_ask_command.installed_plugins == [
         ServerPlugin(name="EssentialsX", version="2.20.1", enabled=True)
     ]
+
+
+def test_grpc_service_streams_ask_progress_before_response():
+    runtime = FakeRuntime()
+    metadata = (("authorization", "Bearer secret-token"),)
+    with running_grpc_server(runtime) as stub:
+        events = list(
+            stub.AskStream(
+                agent_bridge_pb2.AskRequest(
+                    server_id="lobby-1",
+                    server_instance_id="instance-1",
+                    player_id="player-123",
+                    player_name="Steve",
+                    question="How do I configure homes?",
+                    request_id="req-1",
+                    timestamp=123456,
+                ),
+                metadata=metadata,
+            )
+        )
+
+    assert len(events) == 2
+    assert events[0].HasField("progress")
+    assert events[0].progress.stage == "retrieval"
+    assert events[0].progress.elapsed_ms == 250
+    assert events[1].HasField("response")
+    assert events[1].response.answer == "stream answer"
+    assert events[1].response.backend_trace_id == "trace-stream"
+    assert runtime.seen_ask_command is not None
+    assert runtime.seen_ask_command.server_instance_id == "instance-1"
 
 
 def test_grpc_service_maps_sync_identity():

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 
-from agent_for_mc.application.deepagent_state import record_retrieved_docs
+from agent_for_mc.application.deepagent_state import record_progress, record_retrieved_docs
 from agent_for_mc.application.retrieval import merge_retrieved_docs
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import RetrievedDoc
@@ -41,9 +41,11 @@ def build_retrieve_docs_payload(
         attributes={"component": "retrieval", "query.length": len(search_query.strip())},
         metric_name="rag_retrieve_docs_seconds",
     ):
+        record_progress("retrieval", "Searching plugin documentation.")
         record_counter("rag_retrieve_docs_requests_total")
         docs = context.retriever.retrieve(search_query, top_k=context.top_k)
         record_retrieved_docs(docs)
+        record_progress("retrieval_ready", "Plugin documentation search completed.")
         return docs, format_docs_for_tool(
             docs,
             preview_chars=context.citation_preview_chars,
@@ -60,6 +62,7 @@ def build_multi_query_retrieve_docs_payload(
         attributes={"component": "retrieval", "query.count": len(search_queries)},
         metric_name="rag_multi_query_retrieve_docs_seconds",
     ):
+        record_progress("retrieval", "Searching plugin documentation with multiple queries.")
         normalized_queries = [
             query.strip() for query in search_queries if query and query.strip()
         ]
@@ -96,6 +99,7 @@ def build_multi_query_retrieve_docs_payload(
             return [], "No matching documents were found."
 
         record_retrieved_docs(merged_docs)
+        record_progress("retrieval_ready", "Plugin documentation search completed.")
         return merged_docs, "\n\n".join(summary_parts)
 
 

@@ -1,0 +1,119 @@
+name: Release PyInstaller binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os_name }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            os_name: windows
+            arch: x64
+            archive: zip
+            windows: true
+          - runner: ubuntu-24.04
+            os_name: linux
+            arch: x64
+            archive: tar.gz
+            windows: false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build executable
+        run: pyinstaller AgentForMc.spec --noconfirm --clean
+
+      - name: Smoke test executable
+        shell: pwsh
+        run: |
+          if ("${{ matrix.windows }}" -eq "true") {
+            .\dist\AgentForMc.exe --self-check
+          } else {
+            chmod +x ./dist/AgentForMc
+            ./dist/AgentForMc --self-check
+          }
+
+      - name: Package release asset
+        id: package
+        shell: pwsh
+        run: |
+          $scriptArgs = @(
+            ".github/scripts/package_release.py",
+            "--version", "${{ github.ref_name }}",
+            "--os-name", "${{ matrix.os_name }}",
+            "--arch", "${{ matrix.arch }}",
+            "--archive", "${{ matrix.archive }}"
+          )
+          if ("${{ matrix.windows }}" -eq "true") {
+            $scriptArgs += "--windows"
+          }
+          python @scriptArgs
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.asset_name }}
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-assets -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets found." >&2
+            exit 1
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${assets[@]}" \
+              --title "AgentForMc $TAG_NAME" \
+              --notes "Automated PyInstaller builds for AgentForMc $TAG_NAME." \
+              --verify-tag
+          fi
