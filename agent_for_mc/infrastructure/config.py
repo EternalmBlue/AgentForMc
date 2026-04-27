@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from agent_for_mc.infrastructure.dotenv import load_dotenv
+from agent_for_mc.infrastructure.runtime_paths import (
+    default_config_path,
+    ensure_external_runtime_layout,
+    resolve_runtime_path,
+    runtime_base_dir,
+)
 
 try:
     import tomllib
@@ -13,8 +19,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DEFAULT_CONFIG_PATH = BASE_DIR / "config.toml"
+BASE_DIR = runtime_base_dir()
+DEFAULT_CONFIG_PATH = default_config_path()
 
 
 def _get_env(
@@ -67,10 +73,7 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _resolve_path(path_value: str | Path, *, base_dir: Path = BASE_DIR) -> Path:
-    path = Path(path_value).expanduser()
-    if not path.is_absolute():
-        path = base_dir / path
-    return path.resolve()
+    return resolve_runtime_path(path_value, base_dir=base_dir)
 
 
 def _configure_model_cache_env(model_cache_dir: Path) -> None:
@@ -93,10 +96,14 @@ class RuntimeConfigSource:
 
 def load_runtime_config_source() -> RuntimeConfigSource:
     load_dotenv()
+    configured_path = _get_env("RAG_CONFIG_TOML")
     config_path = _resolve_path(
-        _get_env("RAG_CONFIG_TOML", default=str(DEFAULT_CONFIG_PATH))
-        or str(DEFAULT_CONFIG_PATH),
+        configured_path or str(DEFAULT_CONFIG_PATH),
         base_dir=BASE_DIR,
+    )
+    ensure_external_runtime_layout(
+        config_path=config_path,
+        copy_default_config=configured_path is None,
     )
     return RuntimeConfigSource(
         path=config_path,

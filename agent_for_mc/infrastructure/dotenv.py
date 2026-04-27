@@ -3,6 +3,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from agent_for_mc.infrastructure.runtime_paths import (
+    default_dotenv_path,
+    resolve_runtime_path,
+)
+
 
 def load_dotenv(path: Path | None = None) -> Path | None:
     dotenv_path = path or _default_dotenv_path()
@@ -14,11 +19,10 @@ def load_dotenv(path: Path | None = None) -> Path | None:
 
 
 def _default_dotenv_path() -> Path | None:
-    base_dir = Path(__file__).resolve().parent.parent.parent
     env_file = os.getenv("RAG_ENV_FILE")
     if env_file:
-        return Path(env_file).expanduser()
-    return base_dir / ".env"
+        return resolve_runtime_path(env_file)
+    return default_dotenv_path()
 
 
 def _load_dotenv_file(dotenv_path: Path) -> None:
@@ -63,7 +67,4 @@ def _looks_like_path_key(key: str) -> bool:
 
 
 def _resolve_path(value: str, base_dir: Path) -> Path:
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = base_dir / path
-    return path.resolve()
+    return resolve_runtime_path(value, base_dir=base_dir)

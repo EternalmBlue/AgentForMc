@@ -1,0 +1,1 @@
+This marker lets PyInstaller carry an internal data directory. Release archives expose an empty external data directory for user-provided vector indexes.
