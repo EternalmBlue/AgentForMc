@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from contextvars import ContextVar
-from typing import Final
 
 from agent_for_mc.application.deepagent_state import record_retrieved_docs
 from agent_for_mc.application.retrieval import merge_retrieved_docs
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import RetrievedDoc
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
 
 @dataclass(slots=True)
@@ -19,10 +18,7 @@ class RetrieveDocsToolContext:
     citation_preview_chars: int
 
 
-_TOOL_CONTEXT: Final[ContextVar[RetrieveDocsToolContext | None]] = ContextVar(
-    "retrieve_docs_tool_context",
-    default=None,
-)
+_TOOL_CONTEXT = SharedContextSlot[RetrieveDocsToolContext]("retrieve_docs_tool_context")
 
 
 def configure_retrieve_docs_tool(context: RetrieveDocsToolContext) -> None:
@@ -30,10 +26,9 @@ def configure_retrieve_docs_tool(context: RetrieveDocsToolContext) -> None:
 
 
 def get_retrieve_docs_tool_context() -> RetrieveDocsToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("retrieve_docs tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="retrieve_docs tool context has not been configured"
+    )
 
 
 def build_retrieve_docs_payload(

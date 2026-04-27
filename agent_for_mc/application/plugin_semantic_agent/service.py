@@ -15,11 +15,13 @@ from agent_for_mc.application.plugin_semantic_agent.manifest import (
 from agent_for_mc.application.plugin_semantic_agent.scanner import (
     PluginSemanticBundle,
     PluginSemanticBundleSpec,
+    SERVER_CORE_BUNDLE_KIND,
+    SERVER_CORE_PLUGIN_NAME,
     discover_plugin_semantic_bundle_specs,
     load_plugin_semantic_bundle,
 )
 from agent_for_mc.domain.models import SemanticMemoryEntry
-from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
+from agent_for_mc.infrastructure.clients import EmbeddingClient, build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.semantic_memory_vector_store import (
@@ -36,6 +38,17 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(slots=True)
 class PluginSemanticExtractionResult:
     entries: list[SemanticMemoryEntry] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshProgressSnapshot:
+    running: bool = False
+    total_bundles: int = 0
+    completed_bundles: int = 0
+    failed_bundles: int = 0
+    current_bundle: str = ""
+    current_phase: str = ""
+    message: str = ""
 
 
 @dataclass(slots=True)
@@ -82,7 +95,7 @@ class PluginSemanticExtractionRunner:
 @dataclass(slots=True)
 class PluginSemanticAgentService:
     store: LanceSemanticMemoryVectorStore
-    embedding_client: JinaEmbeddingClient
+    embedding_client: EmbeddingClient
     maintenance_runner: PluginSemanticExtractionRunner
     mc_servers_root: str
     manifest_path: Path
@@ -95,6 +108,7 @@ class PluginSemanticAgentService:
     _refresh_thread: Thread | None = field(default=None, init=False, repr=False)
     _inflight: Future[None] | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _progress: RefreshProgressSnapshot = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._executor = ThreadPoolExecutor(
@@ -103,6 +117,7 @@ class PluginSemanticAgentService:
         )
         self._lock = Lock()
         self._stop_event = Event()
+        self._progress = RefreshProgressSnapshot(message="Semantic refresh is idle.")
         if self.refresh_interval_seconds > 0:
             self._refresh_thread = Thread(
                 target=self._run_periodic_refresh,
@@ -120,12 +135,26 @@ class PluginSemanticAgentService:
     def request_refresh_status(self, *, full: bool = False) -> str:
         return self._submit_refresh(full=full)
 
+    def is_refresh_running(self) -> bool:
+        with self._lock:
+            future = self._inflight
+            return future is not None and not future.done()
+
+    def get_refresh_progress_snapshot(self) -> RefreshProgressSnapshot:
+        with self._lock:
+            return self._progress
+
     def _submit_refresh(self, *, full: bool) -> str:
         if self._closed:
             return "closed"
         with self._lock:
             if self._inflight is not None and not self._inflight.done():
                 return "already_running"
+            self._progress = RefreshProgressSnapshot(
+                running=True,
+                current_phase="queued",
+                message="Semantic refresh is queued.",
+            )
             future = self._executor.submit(self._run_refresh, full)
             self._inflight = future
             future.add_done_callback(self._on_refresh_done)
@@ -181,28 +210,84 @@ class PluginSemanticAgentService:
                 current_keys = {(spec.server_id, spec.plugin_name) for spec in specs}
 
                 removed_keys = sorted(manifest.keys() - current_keys)
-                for server_id, plugin_name in removed_keys:
-                    self.store.delete_bundle(server_id=server_id, plugin_name=plugin_name)
-                    manifest.remove(server_id, plugin_name)
-
                 spec_map: dict[tuple[str, str], PluginSemanticBundleSpec] = {
                     (spec.server_id, spec.plugin_name): spec for spec in specs
                 }
+                refresh_specs: list[PluginSemanticBundleSpec] = []
                 for server_id, plugin_name in sorted(current_keys):
                     spec = spec_map[(server_id, plugin_name)]
                     previous_state = manifest.get(server_id, plugin_name)
-                    if not full and previous_state is not None and previous_state.fingerprint == spec.fingerprint:
+                    if (
+                        not full
+                        and previous_state is not None
+                        and previous_state.fingerprint == spec.fingerprint
+                    ):
                         continue
+                    refresh_specs.append(spec)
+
+                total_steps = len(removed_keys) + len(refresh_specs)
+                completed_bundles = 0
+                failed_bundles = 0
+                self._set_progress(
+                    running=True,
+                    total_bundles=total_steps,
+                    completed_bundles=completed_bundles,
+                    failed_bundles=failed_bundles,
+                    current_bundle="",
+                    current_phase="discovering_bundles",
+                    message="Semantic refresh started.",
+                )
+
+                for server_id, plugin_name in removed_keys:
+                    bundle_label = _bundle_progress_label(server_id, plugin_name)
+                    self._set_progress(
+                        running=True,
+                        total_bundles=total_steps,
+                        completed_bundles=completed_bundles,
+                        failed_bundles=failed_bundles,
+                        current_bundle=bundle_label,
+                        current_phase="removing_stale_bundle",
+                        message=f"Removing stale semantic bundle {bundle_label}.",
+                    )
+                    self.store.delete_bundle(server_id=server_id, plugin_name=plugin_name)
+                    manifest.remove(server_id, plugin_name)
+                    self._complete_progress_step(
+                        success=True,
+                        message=f"Removed stale semantic bundle {bundle_label}.",
+                    )
+                    completed_bundles += 1
+
+                for spec in refresh_specs:
+                    bundle_label = _bundle_progress_label(spec.server_id, spec.plugin_name)
+                    self._set_progress(
+                        running=True,
+                        total_bundles=total_steps,
+                        completed_bundles=completed_bundles,
+                        failed_bundles=failed_bundles,
+                        current_bundle=bundle_label,
+                        current_phase="refreshing_bundle",
+                        message=f"Refreshing semantic bundle {bundle_label}.",
+                    )
                     try:
                         self._refresh_bundle(manifest, spec)
+                        self._complete_progress_step(
+                            success=True,
+                            message=f"Refreshed semantic bundle {bundle_label}.",
+                        )
+                        completed_bundles += 1
                     except Exception as exc:  # pragma: no cover - background failure
                         LOGGER.warning(
-                            "Plugin semantic bundle refresh failed: %s / %s: %s",
-                            server_id,
-                            plugin_name,
+                            "Semantic bundle refresh failed: %s / %s: %s",
+                            spec.server_id,
+                            spec.plugin_name,
                             exc,
                             exc_info=True,
                         )
+                        self._complete_progress_step(
+                            success=False,
+                            message=f"Failed to refresh semantic bundle {bundle_label}: {exc}",
+                        )
+                        failed_bundles += 1
 
                 try:
                     manifest.save(self.manifest_path)
@@ -212,7 +297,21 @@ class PluginSemanticAgentService:
                         exc,
                         exc_info=True,
                     )
+                final_progress = self.get_refresh_progress_snapshot()
+                final_message = (
+                    "Semantic refresh completed."
+                    if final_progress.failed_bundles == 0
+                    else f"Semantic refresh completed with {final_progress.failed_bundles} failed bundle(s)."
+                )
+                self._finish_progress(
+                    phase="completed",
+                    message=final_message,
+                )
             except Exception as exc:  # pragma: no cover - background failure
+                self._finish_progress(
+                    phase="failed",
+                    message=f"Semantic refresh failed: {exc}",
+                )
                 LOGGER.warning("Plugin semantic agent refresh failed: %s", exc, exc_info=True)
 
     def _refresh_bundle(
@@ -252,18 +351,72 @@ class PluginSemanticAgentService:
                 return
             self.refresh()
 
+    def _set_progress(
+        self,
+        *,
+        running: bool,
+        total_bundles: int,
+        completed_bundles: int,
+        failed_bundles: int,
+        current_bundle: str,
+        current_phase: str,
+        message: str,
+    ) -> None:
+        with self._lock:
+            self._progress = RefreshProgressSnapshot(
+                running=running,
+                total_bundles=total_bundles,
+                completed_bundles=completed_bundles,
+                failed_bundles=failed_bundles,
+                current_bundle=current_bundle,
+                current_phase=current_phase,
+                message=message,
+            )
+
+    def _complete_progress_step(
+        self,
+        *,
+        success: bool,
+        message: str,
+    ) -> None:
+        with self._lock:
+            progress = self._progress
+            self._progress = RefreshProgressSnapshot(
+                running=progress.running,
+                total_bundles=progress.total_bundles,
+                completed_bundles=progress.completed_bundles + (1 if success else 0),
+                failed_bundles=progress.failed_bundles + (0 if success else 1),
+                current_bundle=progress.current_bundle,
+                current_phase=progress.current_phase,
+                message=message,
+            )
+
+    def _finish_progress(
+        self,
+        *,
+        phase: str,
+        message: str,
+    ) -> None:
+        with self._lock:
+            progress = self._progress
+            self._progress = RefreshProgressSnapshot(
+                running=False,
+                total_bundles=progress.total_bundles,
+                completed_bundles=progress.completed_bundles,
+                failed_bundles=progress.failed_bundles,
+                current_bundle="",
+                current_phase=phase,
+                message=message,
+            )
+
 
 def build_plugin_semantic_service(
     settings: Settings,
     *,
     maintenance_agent: Any | None = None,
 ) -> PluginSemanticAgentService | None:
-    if not settings.plugin_semantic_agent_enabled:
-        return None
-
     mc_servers_root = Path(settings.plugin_semantic_mc_servers_root)
-    if not mc_servers_root.exists():
-        return None
+    mc_servers_root.mkdir(parents=True, exist_ok=True)
 
     if maintenance_agent is None:
         from agent_for_mc.interfaces.deepagent import build_plugin_semantic_agent
@@ -273,16 +426,16 @@ def build_plugin_semantic_service(
         return None
 
     store = LanceSemanticMemoryVectorStore(
-        settings.semantic_memory_db_dir,
-        settings.semantic_memory_table_name,
+        settings.server_config_semantic_vector_db_dir,
+        settings.server_config_semantic_table_name,
         expected_embedding_dimension=settings.expected_embedding_dimension,
     )
     return PluginSemanticAgentService(
         store=store,
-        embedding_client=JinaEmbeddingClient(settings),
+        embedding_client=build_embedding_client(settings),
         maintenance_runner=PluginSemanticExtractionRunner(agent=maintenance_agent),
         mc_servers_root=str(mc_servers_root),
-        manifest_path=settings.semantic_memory_db_dir / "plugin_semantic_manifest.json",
+        manifest_path=settings.server_config_semantic_vector_db_dir / "server_config_semantic_manifest.json",
         refresh_interval_seconds=settings.plugin_semantic_agent_refresh_interval_seconds,
         max_file_chars=settings.plugin_semantic_agent_max_file_chars,
         max_files_per_plugin=settings.plugin_semantic_agent_max_files_per_plugin,
@@ -340,12 +493,24 @@ def _dedupe_entries(entries: list[SemanticMemoryEntry]) -> list[SemanticMemoryEn
 
 
 def _render_plugin_semantic_agent_prompt(bundle: PluginSemanticBundle) -> str:
+    bundle_scope = (
+        "server core configuration"
+        if bundle.bundle_kind == SERVER_CORE_BUNDLE_KIND
+        else "plugin configuration"
+    )
+    bundle_name = (
+        "server-core"
+        if bundle.plugin_name == SERVER_CORE_PLUGIN_NAME
+        else bundle.plugin_name
+    )
     lines: list[str] = [
         "You are plugin_semantic_agent. Produce JSON only.",
-        "Extract stable semantic memories from this Minecraft plugin bundle.",
+        "Extract stable semantic memories from this Minecraft configuration bundle.",
         "",
         f"server_id: {bundle.server_id}",
-        f"plugin_name: {bundle.plugin_name}",
+        f"bundle_kind: {bundle.bundle_kind}",
+        f"bundle_scope: {bundle_scope}",
+        f"plugin_name: {bundle_name}",
         "",
         "Return format:",
         '{"entries":[{"server_id":"...","plugin_name":"...",'
@@ -496,3 +661,7 @@ _PLUGIN_SEMANTIC_AGENT_REPAIR_PROMPT = """You are plugin_semantic_agent.
 The previous output was invalid.
 Return only valid JSON with exactly one top-level key: entries.
 """
+
+
+def _bundle_progress_label(server_id: str, plugin_name: str) -> str:
+    return f"{server_id}/{plugin_name}"

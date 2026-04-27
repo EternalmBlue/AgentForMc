@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
@@ -9,6 +8,7 @@ from langchain_core.tools import tool
 from agent_for_mc.application.deepagent_state import record_standalone_query
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
 
 QUERY_EXPANSION_SYSTEM_PROMPT = """
@@ -32,9 +32,8 @@ class QueryExpansionToolContext:
     client: DeepSeekChatClient
 
 
-_TOOL_CONTEXT: ContextVar[QueryExpansionToolContext | None] = ContextVar(
-    "query_expansion_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[QueryExpansionToolContext](
+    "query_expansion_tool_context"
 )
 
 
@@ -43,10 +42,9 @@ def configure_query_expansion_tool(context: QueryExpansionToolContext) -> None:
 
 
 def get_query_expansion_tool_context() -> QueryExpansionToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("query_expansion tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="query_expansion tool context has not been configured"
+    )
 
 
 @tool("query_expansion")

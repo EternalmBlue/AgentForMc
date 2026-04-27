@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import get_turn_context
 from agent_for_mc.application.retrieval_tool import format_docs_for_tool
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 from agent_for_mc.interfaces.tools.routing.planning import get_planning_tool_context
 
 
@@ -34,9 +34,8 @@ class JudgeRetrievalFreshnessToolContext:
     pass
 
 
-_TOOL_CONTEXT: ContextVar[JudgeRetrievalFreshnessToolContext | None] = ContextVar(
-    "judge_retrieval_freshness_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[JudgeRetrievalFreshnessToolContext](
+    "judge_retrieval_freshness_tool_context"
 )
 
 
@@ -47,10 +46,9 @@ def configure_judge_retrieval_freshness_tool(
 
 
 def get_judge_retrieval_freshness_tool_context() -> JudgeRetrievalFreshnessToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("judge_retrieval_freshness tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="judge_retrieval_freshness tool context has not been configured"
+    )
 
 
 @tool("judge_retrieval_freshness")

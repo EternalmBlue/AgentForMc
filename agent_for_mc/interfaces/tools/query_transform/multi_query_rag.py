@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
@@ -12,6 +11,7 @@ from agent_for_mc.application.retrieval_tool import (
     format_docs_for_tool,
     get_retrieve_docs_tool_context,
 )
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 from agent_for_mc.interfaces.tools.routing.planning import get_planning_tool_context
 
 
@@ -35,9 +35,8 @@ class MultiQueryRagToolContext:
     pass
 
 
-_TOOL_CONTEXT: ContextVar[MultiQueryRagToolContext | None] = ContextVar(
-    "multi_query_rag_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[MultiQueryRagToolContext](
+    "multi_query_rag_tool_context"
 )
 
 
@@ -46,10 +45,9 @@ def configure_multi_query_rag_tool(context: MultiQueryRagToolContext) -> None:
 
 
 def get_multi_query_rag_tool_context() -> MultiQueryRagToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("multi_query_rag tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="multi_query_rag tool context has not been configured"
+    )
 
 
 @tool("multi_query_rag")

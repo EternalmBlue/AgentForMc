@@ -272,7 +272,7 @@ def build_memory_service(
     if not settings.memory_enabled:
         return None
 
-    store = SQLiteMemoryStore(settings.memory_db_path, scope_id=scope_id)
+    store = SQLiteMemoryStore(settings.user_semantic_memory_db_path, scope_id=scope_id)
     store.initialize()
     if maintenance_agent is None:
         from agent_for_mc.interfaces.deepagent import build_memory_maintenance_agent

@@ -41,6 +41,7 @@ class LancePluginVectorStore:
         self._table = None
         self._stats: VectorStoreStats | None = None
         self._rows: list[dict] | None = None
+        self._bm25_index_ready = False
 
     def validate(self) -> VectorStoreStats:
         with trace_operation(
@@ -158,6 +159,82 @@ class LancePluginVectorStore:
                         distance=float(row.get("_distance", 0.0)),
                         match_reason="vector",
                     )
+            )
+            return docs
+
+    def ensure_bm25_index(self, *, replace: bool = False) -> None:
+        with trace_operation(
+            "vector_store.ensure_bm25_index",
+            attributes={"component": "vector_store", "table": self._table_name},
+            metric_name="rag_vector_store_bm25_index_seconds",
+        ):
+            record_counter("rag_vector_store_bm25_index_requests_total")
+            self.validate()
+            if self._bm25_index_ready and not replace:
+                return
+
+            if not replace and _has_content_fts_index(self._table.list_indices()):
+                self._bm25_index_ready = True
+                return
+
+            try:
+                self._table.create_fts_index(
+                    "content",
+                    replace=replace,
+                    base_tokenizer="ngram",
+                    ngram_min_length=2,
+                    ngram_max_length=3,
+                    stem=False,
+                    remove_stop_words=False,
+                )
+            except Exception as exc:
+                raise StartupValidationError(f"Lance BM25 索引创建失败: {exc}") from exc
+            self._bm25_index_ready = True
+
+    def search_by_bm25(
+        self,
+        search_query: str,
+        *,
+        top_k: int,
+        auto_create_index: bool = True,
+    ) -> list[RetrievedDoc]:
+        with trace_operation(
+            "vector_store.search_by_bm25",
+            attributes={"component": "vector_store", "top_k": top_k},
+            metric_name="rag_vector_store_bm25_search_seconds",
+        ):
+            record_counter("rag_vector_store_bm25_search_requests_total")
+            normalized_query = " ".join(str(search_query).split()).strip()
+            if not normalized_query or top_k < 1:
+                return []
+
+            self.validate()
+            if auto_create_index:
+                self.ensure_bm25_index()
+            elif not self._bm25_index_ready:
+                self._bm25_index_ready = _has_content_fts_index(self._table.list_indices())
+
+            try:
+                rows = (
+                    self._table.search(
+                        normalized_query,
+                        query_type="fts",
+                        fts_columns="content",
+                    )
+                    .limit(top_k)
+                    .to_list()
+                )
+            except Exception as exc:
+                raise StartupValidationError(f"Lance BM25 检索失败: {exc}") from exc
+
+            docs: list[RetrievedDoc] = []
+            for row in rows:
+                docs.append(
+                    self._row_to_doc(
+                        row,
+                        distance=float(row.get("_score", 0.0)),
+                        match_reason="bm25",
+                    )
                 )
             return docs
 
@@ -176,3 +253,12 @@ class LancePluginVectorStore:
             distance=distance,
             match_reason=match_reason,
         )
+
+
+def _has_content_fts_index(indices) -> bool:
+    for index in indices:
+        index_type = str(getattr(index, "index_type", "")).upper()
+        columns = [str(column) for column in getattr(index, "columns", [])]
+        if index_type == "FTS" and "content" in columns:
+            return True
+    return False

@@ -3,6 +3,8 @@ pyarrow==23.0.1
 requests==2.32.5
 tomli==2.2.1
 BCEmbedding==0.1.5
+grpcio==1.71.0
+grpcio-tools==1.71.0
 langchain-core==1.2.22
 deepagents==0.4.12
 langchain-deepseek==1.0.1
@@ -12,3 +14,4 @@ opentelemetry-sdk==1.40.0
 opentelemetry-exporter-otlp-proto-http==1.40.0
 opentelemetry-instrumentation==0.61b0
 opentelemetry-instrumentation-requests==0.61b0
+protobuf==5.29.4

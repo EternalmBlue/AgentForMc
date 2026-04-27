@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
 
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -34,9 +34,8 @@ class PluginConfigRoutingToolContext:
     client: DeepSeekChatClient
 
 
-_TOOL_CONTEXT: ContextVar[PluginConfigRoutingToolContext | None] = ContextVar(
-    "plugin_config_routing_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[PluginConfigRoutingToolContext](
+    "plugin_config_routing_tool_context"
 )
 
 
@@ -45,10 +44,9 @@ def configure_plugin_config_routing_tool(context: PluginConfigRoutingToolContext
 
 
 def get_plugin_config_routing_tool_context() -> PluginConfigRoutingToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("plugin config routing tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="plugin config routing tool context has not been configured"
+    )
 
 
 @tool("route_plugin_config_request")

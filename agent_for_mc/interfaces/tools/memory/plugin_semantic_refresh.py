@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from langchain_core.tools import tool
 
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
 if TYPE_CHECKING:
     from agent_for_mc.application.plugin_semantic_agent import PluginSemanticAgentService
@@ -18,9 +18,8 @@ class PluginSemanticRefreshToolContext:
     service: PluginSemanticAgentService
 
 
-_TOOL_CONTEXT: ContextVar[PluginSemanticRefreshToolContext | None] = ContextVar(
-    "plugin_semantic_refresh_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[PluginSemanticRefreshToolContext](
+    "plugin_semantic_refresh_tool_context"
 )
 
 
@@ -31,10 +30,9 @@ def configure_plugin_semantic_refresh_tool(
 
 
 def get_plugin_semantic_refresh_tool_context() -> PluginSemanticRefreshToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("plugin semantic refresh tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="plugin semantic refresh tool context has not been configured"
+    )
 
 
 @tool("refresh_plugin_semantic_memory")

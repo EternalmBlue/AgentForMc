@@ -22,6 +22,13 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
+from agent_for_mc.infrastructure.config import (
+    _config_value,
+    _get_env as _get_runtime_env,
+    _parse_bool as _parse_runtime_bool,
+    load_runtime_config_source,
+)
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,50 +56,67 @@ class ObservabilityConfig:
     otel_console_export: bool
 
 
+def _optional_config_str(config: dict[str, Any], section: str, key: str) -> str | None:
+    value = _config_value(config, section, key, None)
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def load_observability_config() -> ObservabilityConfig:
-    langsmith_api_key = _get_env(
+    config_source = load_runtime_config_source()
+    config = config_source.data
+    langsmith_api_key = _get_runtime_env(
         "RAG_LANGSMITH_API_KEY",
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",
     )
-    langsmith_enabled = _parse_bool(
-        _get_env(
-            "RAG_LANGSMITH_ENABLED",
-            "LANGSMITH_TRACING",
-            "LANGCHAIN_TRACING_V2",
+    langsmith_enabled_default = bool(langsmith_api_key)
+    langsmith_enabled = _parse_runtime_bool(
+        _config_value(
+            config,
+            "observability",
+            "langsmith_enabled",
+            langsmith_enabled_default,
         ),
-        default=bool(langsmith_api_key),
+        default=langsmith_enabled_default,
     )
-    langsmith_project = _get_env(
-        "RAG_LANGSMITH_PROJECT",
-        "LANGSMITH_PROJECT",
-        "LANGCHAIN_PROJECT",
-        default=DEFAULT_LANGSMITH_PROJECT,
-    )
-    langsmith_endpoint = _get_env(
-        "RAG_LANGSMITH_ENDPOINT",
-        "LANGSMITH_ENDPOINT",
-        "LANGCHAIN_ENDPOINT",
-        default=DEFAULT_LANGSMITH_ENDPOINT,
-    )
+    langsmith_project = str(
+        _config_value(
+            config,
+            "observability",
+            "langsmith_project",
+            DEFAULT_LANGSMITH_PROJECT,
+        )
+    ) or DEFAULT_LANGSMITH_PROJECT
+    langsmith_endpoint = str(
+        _config_value(
+            config,
+            "observability",
+            "langsmith_endpoint",
+            DEFAULT_LANGSMITH_ENDPOINT,
+        )
+    ) or DEFAULT_LANGSMITH_ENDPOINT
 
-    otel_exporter_otlp_endpoint = _get_env(
-        "RAG_OTEL_EXPORTER_OTLP_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    otel_exporter_otlp_endpoint = _optional_config_str(
+        config,
+        "observability",
+        "otel_exporter_otlp_endpoint",
     )
-    otel_console_export = _parse_bool(
-        _get_env("RAG_OTEL_CONSOLE_EXPORT", "OTEL_CONSOLE_EXPORT"),
+    otel_console_export = _parse_runtime_bool(
+        _config_value(config, "observability", "otel_console_export", False),
         default=False,
     )
-    raw_otel_enabled = _get_env("RAG_OTEL_ENABLED")
-    if raw_otel_enabled is not None:
-        otel_enabled = _parse_bool(raw_otel_enabled)
+    otel_enabled_default = bool(otel_exporter_otlp_endpoint) or otel_console_export
+    raw_sdk_disabled = _get_runtime_env("OTEL_SDK_DISABLED")
+    if raw_sdk_disabled is not None:
+        otel_enabled = not _parse_runtime_bool(raw_sdk_disabled)
     else:
-        raw_sdk_disabled = _get_env("OTEL_SDK_DISABLED")
-        if raw_sdk_disabled is not None:
-            otel_enabled = not _parse_bool(raw_sdk_disabled)
-        else:
-            otel_enabled = bool(otel_exporter_otlp_endpoint) or otel_console_export
+        otel_enabled = _parse_runtime_bool(
+            _config_value(config, "observability", "otel_enabled", otel_enabled_default),
+            default=otel_enabled_default,
+        )
 
     return ObservabilityConfig(
         langsmith_enabled=langsmith_enabled,
@@ -100,21 +124,29 @@ def load_observability_config() -> ObservabilityConfig:
         langsmith_project=langsmith_project,
         langsmith_endpoint=langsmith_endpoint,
         otel_enabled=otel_enabled,
-        otel_service_name=_get_env(
-            "RAG_OTEL_SERVICE_NAME",
-            "OTEL_SERVICE_NAME",
-            default=DEFAULT_SERVICE_NAME,
-        ),
+        otel_service_name=str(
+            _config_value(
+                config,
+                "observability",
+                "otel_service_name",
+                DEFAULT_SERVICE_NAME,
+            )
+        )
+        or DEFAULT_SERVICE_NAME,
         otel_exporter_otlp_endpoint=otel_exporter_otlp_endpoint,
-        otel_exporter_otlp_headers=_get_env(
+        otel_exporter_otlp_headers=_get_runtime_env(
             "RAG_OTEL_EXPORTER_OTLP_HEADERS",
             "OTEL_EXPORTER_OTLP_HEADERS",
         ),
-        otel_exporter_otlp_protocol=_get_env(
-            "RAG_OTEL_EXPORTER_OTLP_PROTOCOL",
-            "OTEL_EXPORTER_OTLP_PROTOCOL",
-            default="http/protobuf",
-        ),
+        otel_exporter_otlp_protocol=str(
+            _config_value(
+                config,
+                "observability",
+                "otel_exporter_otlp_protocol",
+                "http/protobuf",
+            )
+        )
+        or "http/protobuf",
         otel_console_export=otel_console_export,
     )
 

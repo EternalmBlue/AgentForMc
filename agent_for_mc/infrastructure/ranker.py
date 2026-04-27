@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 from agent_for_mc.domain.errors import ConfigurationError, ServiceError
@@ -12,10 +13,12 @@ from agent_for_mc.infrastructure.observability import record_counter, trace_oper
 class BceRanker:
     model_name_or_path: str
     _model: Any | None = None
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def warmup(self) -> None:
         """Load the underlying ranker model eagerly."""
-        self._get_model()
+        with self._lock:
+            self._get_model()
 
     def compute_scores(self, query: str, passages: list[str]) -> list[float]:
         if not passages:
@@ -26,10 +29,11 @@ class BceRanker:
             metric_name="rag_ranker_compute_scores_seconds",
         ):
             record_counter("rag_ranker_compute_scores_requests_total")
-            model = self._get_model()
             sentence_pairs = [[query, passage] for passage in passages]
             try:
-                scores = model.compute_score(sentence_pairs)
+                with self._lock:
+                    model = self._get_model()
+                    scores = model.compute_score(sentence_pairs)
             except Exception as exc:  # pragma: no cover - external model failure
                 raise ServiceError(f"BCE ranker 评分失败: {exc}") from exc
             return [float(score) for score in scores]
@@ -43,9 +47,10 @@ class BceRanker:
             metric_name="rag_ranker_rank_seconds",
         ):
             record_counter("rag_ranker_rank_requests_total")
-            model = self._get_model()
             try:
-                results = model.rerank(query, passages)
+                with self._lock:
+                    model = self._get_model()
+                    results = model.rerank(query, passages)
             except Exception as exc:  # pragma: no cover - external model failure
                 raise ServiceError(f"BCE ranker 排序失败: {exc}") from exc
 

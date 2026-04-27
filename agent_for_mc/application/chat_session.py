@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from agent_for_mc.application.deepagent_state import (
     clear_turn_context,
     consume_turn_context,
+    record_server_plugins,
     record_standalone_query,
     start_turn_context,
 )
@@ -59,7 +60,12 @@ class RagChatSession:
             return False
         return self._plugin_semantic_service.refresh()
 
-    def ask(self, question: str) -> AnswerResult:
+    def ask(
+        self,
+        question: str,
+        *,
+        server_plugins: list[str] | None = None,
+    ) -> AnswerResult:
         with trace_operation(
             "session.ask",
             attributes={"component": "session", "question.length": len(question.strip())},
@@ -91,6 +97,7 @@ class RagChatSession:
 
             start_turn_context()
             record_standalone_query(standalone_query)
+            record_server_plugins(server_plugins or [])
             try:
                 state = self._deep_agent.invoke(
                     {

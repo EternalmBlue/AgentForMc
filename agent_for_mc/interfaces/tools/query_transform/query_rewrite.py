@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
@@ -8,6 +7,7 @@ from langchain_core.tools import tool
 from agent_for_mc.application.deepagent_state import record_standalone_query
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
 
 QUERY_REWRITE_SYSTEM_PROMPT = """
@@ -29,9 +29,8 @@ class QueryRewriteToolContext:
     client: DeepSeekChatClient
 
 
-_TOOL_CONTEXT: ContextVar[QueryRewriteToolContext | None] = ContextVar(
-    "query_rewrite_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[QueryRewriteToolContext](
+    "query_rewrite_tool_context"
 )
 
 
@@ -40,10 +39,9 @@ def configure_query_rewrite_tool(context: QueryRewriteToolContext) -> None:
 
 
 def get_query_rewrite_tool_context() -> QueryRewriteToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("query_rewrite tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="query_rewrite tool context has not been configured"
+    )
 
 
 @tool("query_rewrite")

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import record_standalone_query
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 from agent_for_mc.interfaces.tools.routing.planning import get_planning_tool_context
 
 
@@ -41,9 +41,8 @@ class SelectRetrievalToolContext:
     default_backend: str = "chunk"
 
 
-_TOOL_CONTEXT: ContextVar[SelectRetrievalToolContext | None] = ContextVar(
-    "select_retrieval_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[SelectRetrievalToolContext](
+    "select_retrieval_tool_context"
 )
 
 
@@ -52,10 +51,9 @@ def configure_select_retrieval_tool(context: SelectRetrievalToolContext) -> None
 
 
 def get_select_retrieval_tool_context() -> SelectRetrievalToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("select_retrieval_tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="select_retrieval_tool context has not been configured"
+    )
 
 
 @tool("select_retrieval_tool")

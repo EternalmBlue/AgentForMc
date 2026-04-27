@@ -14,6 +14,7 @@ from agent_for_mc.application.plugin_semantic_agent.service import (
     PluginSemanticAgentService,
     PluginSemanticExtractionResult,
     PluginSemanticExtractionRunner,
+    RefreshProgressSnapshot,
     build_plugin_semantic_service,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "PluginSemanticManifest",
     "PluginSemanticExtractionResult",
     "PluginSemanticExtractionRunner",
+    "RefreshProgressSnapshot",
     "PluginSemanticAgentService",
     "build_plugin_semantic_service",
 ]

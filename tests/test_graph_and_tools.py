@@ -2,12 +2,12 @@
 
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 import json
 
-import pyarrow as pa
-
+import lancedb
 import pytest
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -27,29 +27,31 @@ from agent_for_mc.application.memory_service import (
 )
 from agent_for_mc.application.deepagent_state import (
     clear_turn_context,
+    record_server_plugins,
     record_retrieved_docs,
     start_turn_context,
 )
-from agent_for_mc.application.plugin_config import PluginConfigRetriever
 from agent_for_mc.application.prompts import format_history
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.domain.models import (
     AnswerResult,
-    PluginConfigDoc,
     RetrievedDoc,
+    SemanticMemoryDoc,
     SemanticMemoryEntry,
 )
 from agent_for_mc.infrastructure.config import Settings
-from agent_for_mc.infrastructure.memory_store import MemoryAction, MemoryCandidate, SQLiteMemoryStore
-from agent_for_mc.infrastructure.plugin_config_vector_store import (
-    LancePluginConfigVectorStore,
+from agent_for_mc.infrastructure.clients import (
+    OpenAICompatibleEmbeddingClient,
+    build_embedding_client,
+    validate_embedding_settings,
 )
-from agent_for_mc.infrastructure import plugin_config_vector_store as plugin_config_vector_store_module
-from agent_for_mc.domain.errors import StartupValidationError
-from agent_for_mc.interfaces import cli as cli_module
+from agent_for_mc.infrastructure.memory_store import MemoryAction, MemoryCandidate, SQLiteMemoryStore
+from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
+from agent_for_mc.domain.errors import ConfigurationError
 from agent_for_mc.interfaces.deepagent import build_deep_agent
 from agent_for_mc.interfaces.deepagent import main_agent as deepagent_main_agent_module
 from agent_for_mc.interfaces.deepagent import memory_agent as deepagent_memory_agent_module
+from agent_for_mc.interfaces import session_factory as session_factory_module
 from agent_for_mc.interfaces.tools.query_transform import (
     HydeToolContext,
     MultiQueryRagToolContext,
@@ -128,43 +130,68 @@ class FakeVectorStore:
         ]
 
 
+class FakeBM25VectorStore(FakeVectorStore):
+    def __init__(self):
+        self.bm25_calls: list[tuple[str, int, bool]] = []
+
+    def search_by_bm25(
+        self,
+        search_query: str,
+        *,
+        top_k: int,
+        auto_create_index: bool = True,
+    ):
+        self.bm25_calls.append((search_query, top_k, auto_create_index))
+        return [
+            RetrievedDoc(
+                id=3,
+                plugin_chinese_name="插件C",
+                plugin_english_name="PluginC",
+                content="bm25 content",
+                distance=1.25,
+                match_reason="bm25",
+            )
+        ]
+
+
 class FakeEmbeddingClient:
     def embed_query(self, search_query: str):
         return [0.0, 1.0]
 
 
-class FakePluginConfigVectorStore:
-    def find_name_matches(self, search_query: str):
+class FakeSemanticMemoryRetriever:
+    def retrieve(self, search_query: str, *, top_k: int = 8, server_id=None, plugin_name=None):
         return [
-            PluginConfigDoc(
-                id=11,
-                plugin_chinese_name="MMORPG",
-                plugin_english_name="MMORPG",
-                file_path="mmorpg/config.yml",
-                content="mob-spawn-rate: 1.0",
+            SemanticMemoryDoc(
+                server_id="lobby-1",
+                plugin_name="MMORPG",
+                memory_type="plugin_config",
+                relation_type="contains",
+                memory_text="mmorpg/config.yml contains mob-spawn-rate: 1.0",
                 distance=0.0,
                 match_reason="name-boost",
-            )
-        ]
-
-    def search_by_embedding(self, embedding, *, top_k: int):
-        return [
-            PluginConfigDoc(
-                id=12,
-                plugin_chinese_name="MMORPG",
-                plugin_english_name="MMORPG",
-                file_path="mmorpg/mob.yml",
-                content="mob-level: 5",
+            ),
+            SemanticMemoryDoc(
+                server_id="lobby-1",
+                plugin_name="MMORPG",
+                memory_type="plugin_config",
+                relation_type="contains",
+                memory_text="mmorpg/mob.yml contains mob-level: 5",
                 distance=0.13,
                 match_reason="vector",
-            )
+            ),
         ]
 
 
 class FakePluginConfigSummaryClient:
     def chat(self, messages, *, temperature: float = 0.0):
         system_prompt = str(messages[0]["content"])
-        if "插件配置整理助手" in system_prompt or "plugin configuration" in system_prompt.lower():
+        lowered = system_prompt.lower()
+        if (
+            "插件配置整理助手" in system_prompt
+            or "plugin configuration" in lowered
+            or "server configuration" in lowered
+        ):
             return "MMORPG 的配置分散在 config.yml 和 mob.yml 中，当前问题涉及怪物生成和等级设置。"
         return "unexpected prompt"
 
@@ -549,12 +576,8 @@ class FakeMemoryChatClient:
 
 def make_settings() -> Settings:
     return Settings(
-        lance_db_dir=Path("data/plugins_vector_db"),
-        lance_table_name="plugins_docs",
-        jina_api_key="test",
-        jina_embeddings_url="https://example.com/jina",
-        jina_embeddings_model="test-model",
-        jina_embeddings_task="retrieval.query",
+        plugin_docs_vector_db_dir=Path("data/plugin_docs_vector_db"),
+        plugin_docs_table_name="plugin_docs",
         deepseek_api_key="test",
         deepseek_model="test-model",
         deepseek_chat_url="https://api.deepseek.com/chat/completions",
@@ -570,26 +593,24 @@ def make_settings() -> Settings:
         plugin_config_agent_model="deepseek-chat",
         memory_maintenance_agent_model="deepseek-chat",
         memory_enabled=False,
-        memory_db_path=Path(".cache/memory/memory.sqlite3"),
+        user_semantic_memory_db_path=Path("data/user_semantic_memory.sqlite3"),
         memory_recall_limit=5,
         memory_min_confidence=0.75,
         memory_consolidation_turns=4,
-        plugin_semantic_agent_enabled=False,
         plugin_semantic_mc_servers_root=Path("mc_servers"),
         plugin_semantic_agent_model="deepseek-chat",
         plugin_semantic_agent_scan_on_startup=False,
         plugin_semantic_agent_refresh_interval_seconds=1800,
         plugin_semantic_agent_max_file_chars=12000,
         plugin_semantic_agent_max_files_per_plugin=20,
-        semantic_memory_db_dir=Path("data/semantic_memory_vector_db"),
-        semantic_memory_table_name="semantic_memory_contexts",
-        semantic_memory_top_k=8,
-        semantic_memory_preview_chars=220,
-        plugin_config_db_dir=Path("data/plugin_config_vector_db"),
-        plugin_config_table_name="plugin_config_docs",
-        plugin_config_top_k=6,
-        plugin_config_preview_chars=220,
-        plugin_config_summary_chars=500,
+        server_config_semantic_vector_db_dir=Path("data/server_config_semantic_vector_db"),
+        server_config_semantic_table_name="server_config_semantic_memories",
+        server_config_semantic_top_k=8,
+        server_config_semantic_preview_chars=220,
+        embedding_api_key="test-zhipu-key",
+        embedding_api_key_env="RAG_ZHIPU_API_KEY",
+        embedding_url="https://open.bigmodel.cn/api/paas/v4/embeddings",
+        embedding_model="embedding-3",
     )
 
 
@@ -610,27 +631,32 @@ def test_settings_from_env_loads_dotenv_and_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     env_file.write_text(
         r"""
-RAG_CONFIG_TOML=.\config.toml
-RAG_MODEL_CACHE_DIR=.\.cache\models
-RAG_LANCE_DB_DIR=.\data\plugins_vector_db
-RAG_JINA_API_KEY=test-jina-key
+RAG_ZHIPU_API_KEY=test-zhipu-key
 RAG_DEEPSEEK_API_KEY=test-deepseek-key
+RAG_GRPC_AUTH_TOKEN=test-grpc-token
 """.strip(),
         encoding="utf-8",
     )
     config_path.write_text(
         """
 [paths]
-lance_db_dir = "data/plugins_vector_db"
+plugin_docs_vector_db_dir = "data/plugin_docs_vector_db"
 model_cache_dir = ".cache/models"
 
-[vector_store]
-lance_table_name = "plugins_docs"
-expected_embedding_dimension = 1024
-rewrite_history_turns = 4
+[plugin_docs_store]
+table_name = "plugin_docs"
 retrieval_top_k = 8
 answer_top_k = 4
 citation_preview_chars = 200
+bm25_enabled = true
+bm25_top_k = 6
+bm25_auto_create_index = false
+
+[embedding]
+dimensions = 1024
+
+[chat]
+rewrite_history_turns = 4
 
 [reranker]
 enabled = true
@@ -643,7 +669,6 @@ model = "deepseek-lite"
 model = "deepseek-mini"
 
 [plugin_semantic_agent]
-enabled = true
 mc_servers_root = "mc_servers"
 model = "deepseek-config"
 scan_on_startup = true
@@ -651,75 +676,230 @@ refresh_interval_seconds = 900
 max_file_chars = 8000
 max_files_per_plugin = 12
 
-[semantic_memory_store]
-db_dir = "data/semantic_memory_vector_db"
-table_name = "semantic_memory_contexts"
+[server_config_semantic_store]
+db_dir = "data/server_config_semantic_vector_db"
+table_name = "server_config_semantic_memories"
 top_k = 7
 preview_chars = 180
 
 [memory]
 enabled = true
-db_path = ".cache/memory/memory.sqlite3"
+db_path = "data/user_semantic_memory.sqlite3"
 recall_limit = 3
 min_confidence = 0.8
 consolidation_turns = 6
 
-[plugin_config_store]
-db_dir = "data/plugin_config_vector_db"
-table_name = "plugin_config_docs"
-top_k = 7
-preview_chars = 180
-summary_chars = 420
+[grpc]
+host = "127.0.0.1"
+port = 50051
+max_workers = 8
+session_ttl_seconds = 1800
+sync_ttl_seconds = 3600
+upload_tmp_dir = ".cache/grpc_uploads"
 """.strip(),
         encoding="utf-8",
     )
 
     monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
-    monkeypatch.delenv("RAG_CONFIG_TOML", raising=False)
-    monkeypatch.delenv("RAG_MODEL_CACHE_DIR", raising=False)
-    monkeypatch.delenv("RAG_LANCE_DB_DIR", raising=False)
-    monkeypatch.delenv("RAG_JINA_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_CONFIG_TOML", str(config_path))
+    monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
 
     settings = Settings.from_env()
 
-    assert settings.lance_db_dir == (tmp_path / "data/plugins_vector_db").resolve()
+    assert settings.plugin_docs_vector_db_dir == (tmp_path / "data/plugin_docs_vector_db").resolve()
     assert settings.model_cache_dir == (tmp_path / ".cache/models").resolve()
-    assert settings.jina_api_key == "test-jina-key"
+    assert settings.embedding_api_key == "test-zhipu-key"
+    assert settings.embedding_url == "https://open.bigmodel.cn/api/paas/v4/embeddings"
+    assert settings.embedding_model == "embedding-3"
+    assert settings.resolved_embedding_dimensions == 1024
+    assert settings.plugin_docs_bm25_enabled is True
+    assert settings.plugin_docs_bm25_top_k == 6
+    assert settings.plugin_docs_bm25_auto_create_index is False
     assert settings.deepseek_api_key == "test-deepseek-key"
     assert settings.reranker_enabled is True
     assert settings.reranker_model_name_or_path == "maidalun1020/bce-reranker-base_v1"
     assert settings.plugin_config_agent_model == "deepseek-lite"
     assert settings.memory_maintenance_agent_model == "deepseek-mini"
     assert settings.memory_enabled is True
-    assert settings.memory_db_path == (tmp_path / ".cache/memory/memory.sqlite3").resolve()
+    assert settings.user_semantic_memory_db_path == (
+        tmp_path / "data/user_semantic_memory.sqlite3"
+    ).resolve()
     assert settings.memory_recall_limit == 3
     assert settings.memory_min_confidence == 0.8
     assert settings.memory_consolidation_turns == 6
-    assert settings.plugin_semantic_agent_enabled is True
     assert settings.plugin_semantic_mc_servers_root == (tmp_path / "mc_servers").resolve()
     assert settings.plugin_semantic_agent_model == "deepseek-config"
     assert settings.plugin_semantic_agent_scan_on_startup is True
     assert settings.plugin_semantic_agent_refresh_interval_seconds == 900
     assert settings.plugin_semantic_agent_max_file_chars == 8000
     assert settings.plugin_semantic_agent_max_files_per_plugin == 12
-    assert settings.semantic_memory_db_dir == (
-        tmp_path / "data/semantic_memory_vector_db"
+    assert settings.server_config_semantic_vector_db_dir == (
+        tmp_path / "data/server_config_semantic_vector_db"
     ).resolve()
-    assert settings.semantic_memory_table_name == "semantic_memory_contexts"
-    assert settings.semantic_memory_top_k == 7
-    assert settings.semantic_memory_preview_chars == 180
-    assert settings.plugin_config_db_dir == (
-        tmp_path / "data/plugin_config_vector_db"
+    assert settings.server_config_semantic_table_name == "server_config_semantic_memories"
+    assert settings.server_config_semantic_top_k == 7
+    assert settings.server_config_semantic_preview_chars == 180
+    assert settings.server_instance_bindings_path == (
+        tmp_path / "data/server_instance_bindings.json"
     ).resolve()
-    assert settings.plugin_config_table_name == "plugin_config_docs"
-    assert settings.plugin_config_top_k == 7
-    assert settings.plugin_config_preview_chars == 180
-    assert settings.plugin_config_summary_chars == 420
+    assert settings.grpc_auth_token == "test-grpc-token"
     assert os.environ["HF_HOME"] == str(settings.model_cache_dir)
     assert os.environ["TRANSFORMERS_CACHE"] == str(
         settings.model_cache_dir / "transformers"
     )
+
+
+def test_settings_from_env_uses_convention_defaults_for_optional_config(
+    tmp_path, monkeypatch
+):
+    env_file = tmp_path / ".env"
+    config_path = tmp_path / "config.toml"
+    env_file.write_text(
+        r"""
+RAG_ZHIPU_API_KEY=test-zhipu-key
+RAG_DEEPSEEK_API_KEY=test-deepseek-key
+RAG_GRPC_AUTH_TOKEN=test-grpc-token
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        """
+# empty on purpose: rely on built-in defaults
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
+    monkeypatch.setenv("RAG_CONFIG_TOML", str(config_path))
+    monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.model_cache_dir == (tmp_path / ".cache/models").resolve()
+    assert settings.plugin_docs_vector_db_dir == (
+        tmp_path / "data/plugin_docs_vector_db"
+    ).resolve()
+    assert settings.server_config_semantic_vector_db_dir == (
+        tmp_path / "data/server_config_semantic_vector_db"
+    ).resolve()
+    assert settings.user_semantic_memory_db_path == (
+        tmp_path / "data/user_semantic_memory.sqlite3"
+    ).resolve()
+    assert settings.server_instance_bindings_path == (
+        tmp_path / "data/server_instance_bindings.json"
+    ).resolve()
+    assert settings.grpc_host == "127.0.0.1"
+    assert settings.grpc_port == 50051
+    assert settings.plugin_semantic_mc_servers_root == (tmp_path / "mc_servers").resolve()
+    assert settings.plugin_semantic_agent_scan_on_startup is True
+    assert settings.embedding_url == "https://open.bigmodel.cn/api/paas/v4/embeddings"
+    assert settings.embedding_model == "embedding-3"
+    assert settings.resolved_embedding_dimensions == 1024
+    assert settings.retrieval_top_k == 5
+    assert settings.answer_top_k == 4
+    assert settings.plugin_docs_bm25_enabled is True
+    assert settings.plugin_docs_bm25_top_k == 7
+    assert settings.plugin_docs_bm25_auto_create_index is True
+
+
+def test_settings_from_env_loads_zhipu_embedding_overrides(
+    tmp_path, monkeypatch
+):
+    env_file = tmp_path / ".env"
+    config_path = tmp_path / "config.toml"
+    env_file.write_text(
+        r"""
+RAG_ZHIPU_API_KEY=test-zhipu-key
+RAG_DEEPSEEK_API_KEY=test-deepseek-key
+RAG_GRPC_AUTH_TOKEN=test-grpc-token
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        """
+[embedding]
+url = "https://embeddings.example.com/v1/embeddings"
+model = "bge-m3"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
+    monkeypatch.setenv("RAG_CONFIG_TOML", str(config_path))
+    monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.resolved_embedding_api_key == "test-zhipu-key"
+    assert settings.resolved_embedding_api_key_env == "RAG_ZHIPU_API_KEY"
+    assert settings.resolved_embedding_url == "https://embeddings.example.com/v1/embeddings"
+    assert settings.resolved_embedding_model == "bge-m3"
+    assert settings.resolved_embedding_dimensions == 1024
+
+
+def test_build_embedding_client_uses_zhipu_openai_payload(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"data": [{"embedding": [0.5, 1.5]}]}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "agent_for_mc.infrastructure.clients.requests.post",
+        fake_post,
+    )
+
+    settings = replace(
+        make_settings(),
+        embedding_api_key="embedding-secret",
+        embedding_api_key_env="RAG_ZHIPU_API_KEY",
+        embedding_url="https://embeddings.example.com/v1/embeddings",
+        embedding_model="embedding-3",
+        expected_embedding_dimension=1024,
+    )
+
+    client = build_embedding_client(settings)
+    embedding = client.embed_query("hello world")
+
+    assert isinstance(client, OpenAICompatibleEmbeddingClient)
+    assert embedding == [0.5, 1.5]
+    assert captured["url"] == "https://embeddings.example.com/v1/embeddings"
+    assert captured["headers"] == {
+        "Authorization": "Bearer embedding-secret",
+        "Content-Type": "application/json",
+    }
+    assert captured["json"] == {
+        "model": "embedding-3",
+        "input": "hello world",
+        "dimensions": 1024,
+    }
+    assert captured["timeout"] == 5
+
+
+def test_validate_embedding_settings_rejects_unsupported_dimension():
+    with pytest.raises(ConfigurationError, match="embedding\\.dimensions"):
+        validate_embedding_settings(
+            replace(
+                make_settings(),
+                expected_embedding_dimension=1536,
+            )
+        )
 
 
 def test_extract_memory_candidates_filters_stable_preferences():
@@ -735,7 +915,7 @@ def test_extract_memory_candidates_filters_stable_preferences():
 
 
 def test_sqlite_memory_store_persists_and_recalls_by_keyword(tmp_path):
-    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3", scope_id="test-user")
+    store = SQLiteMemoryStore(tmp_path / "user_semantic_memory.sqlite3", scope_id="test-user")
     store.save_candidates(
         [
             MemoryCandidate(
@@ -765,7 +945,7 @@ def test_memory_service_recall_context_formats_memories(tmp_path):
     settings = replace(
         make_settings(),
         memory_enabled=True,
-        memory_db_path=tmp_path / "memory.sqlite3",
+        user_semantic_memory_db_path=tmp_path / "user_semantic_memory.sqlite3",
         memory_recall_limit=3,
         memory_min_confidence=0.75,
     )
@@ -797,7 +977,7 @@ def test_build_memory_service_uses_supplied_maintenance_agent(tmp_path):
     settings = replace(
         make_settings(),
         memory_enabled=True,
-        memory_db_path=tmp_path / "memory.sqlite3",
+        user_semantic_memory_db_path=tmp_path / "user_semantic_memory.sqlite3",
     )
 
     maintenance_agent = FakeMaintenanceAgent()
@@ -1100,6 +1280,59 @@ def test_retriever_uses_ranker_when_configured():
     assert [doc.id for doc in ranker.last_docs] == [1, 2]
 
 
+def test_retriever_adds_bm25_recall_path():
+    vector_store = FakeBM25VectorStore()
+    retriever = Retriever(
+        vector_store,
+        FakeEmbeddingClient(),
+        bm25_enabled=True,
+        bm25_top_k=5,
+        bm25_auto_create_index=False,
+    )
+
+    docs = retriever.retrieve(" plugin config ", top_k=3)
+
+    assert [doc.id for doc in docs] == [1, 2, 3]
+    assert docs[2].match_reason == "bm25"
+    assert vector_store.bm25_calls == [("plugin config", 5, False)]
+
+
+def test_lance_plugin_vector_store_searches_bm25(tmp_path):
+    db_dir = tmp_path / "plugin_docs_vector_db"
+    db = lancedb.connect(str(db_dir))
+    db.create_table(
+        "plugin_docs",
+        data=[
+            {
+                "id": 1,
+                "content": "AuthMe login password session configuration",
+                "plugin_chinese_name": "认证",
+                "plugin_english_name": "AuthMe",
+                "embedding": [0.0, 1.0],
+            },
+            {
+                "id": 2,
+                "content": "WorldGuard region flag protection",
+                "plugin_chinese_name": "领地",
+                "plugin_english_name": "WorldGuard",
+                "embedding": [1.0, 0.0],
+            },
+        ],
+    )
+    store = LancePluginVectorStore(
+        db_dir,
+        "plugin_docs",
+        expected_embedding_dimension=2,
+    )
+
+    docs = store.search_by_bm25("AuthMe password", top_k=2)
+
+    assert docs
+    assert docs[0].id == 1
+    assert docs[0].match_reason == "bm25"
+    assert docs[0].distance > 0
+
+
 def test_build_session_warmups_ranker(monkeypatch):
     warmed: list[str] = []
 
@@ -1110,11 +1343,11 @@ def test_build_session_warmups_ranker(monkeypatch):
         def warmup(self) -> None:
             warmed.append(self.model_name_or_path)
 
-    monkeypatch.setattr(cli_module, "BceRanker", FakeBceRanker)
+    monkeypatch.setattr(session_factory_module, "BceRanker", FakeBceRanker)
 
     settings = replace(make_settings(), reranker_enabled=True)
 
-    session = cli_module.build_session(settings, memory_scope_id="test-user")
+    session = session_factory_module.build_session(settings, memory_scope_id="test-user")
 
     assert isinstance(session, RagChatSession)
     assert warmed == ["maidalun1020/bce-reranker-base_v1"]
@@ -1135,13 +1368,23 @@ def test_build_session_does_not_auto_refresh_plugin_semantic_service(monkeypatch
 
     fake_service = FakePluginSemanticService()
 
-    monkeypatch.setattr(cli_module, "build_memory_maintenance_agent", lambda *, settings: object())
-    monkeypatch.setattr(cli_module, "build_memory_service", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli_module, "build_plugin_semantic_service", lambda settings: fake_service)
-    monkeypatch.setattr(cli_module, "build_deep_agent", lambda **kwargs: FakeDeepAgent())
+    monkeypatch.setattr(
+        session_factory_module,
+        "build_memory_maintenance_agent",
+        lambda *, settings: object(),
+    )
+    monkeypatch.setattr(session_factory_module, "build_memory_service", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        session_factory_module,
+        "build_plugin_semantic_service",
+        lambda settings: fake_service,
+    )
+    monkeypatch.setattr(session_factory_module, "build_deep_agent", lambda **kwargs: FakeDeepAgent())
 
-    settings = replace(make_settings(), plugin_semantic_agent_enabled=True)
-    session = cli_module.build_session(settings, memory_scope_id="test-user")
+    session = session_factory_module.build_session(
+        make_settings(),
+        memory_scope_id="test-user",
+    )
 
     assert session.has_plugin_semantic_service() is True
     assert fake_service.refresh_calls == 0
@@ -1168,10 +1411,7 @@ def test_payload_helper_returns_docs_and_summary():
 def test_plugin_config_retrieve_tool_returns_summary_and_paths():
     configure_plugin_config_tool(
         PluginConfigToolContext(
-            retriever=PluginConfigRetriever(
-                FakePluginConfigVectorStore(),
-                FakeEmbeddingClient(),
-            ),
+            retriever=FakeSemanticMemoryRetriever(),
             summarizer_client=FakePluginConfigSummaryClient(),
             top_k=2,
             preview_chars=18,
@@ -1184,7 +1424,7 @@ def test_plugin_config_retrieve_tool_returns_summary_and_paths():
     assert "MMORPG 的配置分散在 config.yml 和 mob.yml 中" in output
     assert "mmorpg/config.yml" in output
     assert "mmorpg/mob.yml" in output
-    assert "Evidence:" in output
+    assert "Server config semantic memory:" in output
 
 
 def test_build_deep_agent_registers_plugin_config_tool(monkeypatch):
@@ -1242,7 +1482,7 @@ def test_build_deep_agent_registers_plugin_semantic_refresh_tool(monkeypatch):
 
     monkeypatch.setattr(deepagent_main_agent_module, "create_deep_agent", fake_create_deep_agent)
 
-    settings = replace(make_settings(), plugin_semantic_agent_enabled=True)
+    settings = make_settings()
     build_deep_agent(
         settings=settings,
         retriever=Retriever(FakeVectorStore(), FakeEmbeddingClient()),
@@ -1297,56 +1537,6 @@ def test_refresh_plugin_semantic_memory_tool_reports_inflight_refresh():
     assert "already running" in data["message"]
 
 
-def test_plugin_config_vector_store_validation_errors(tmp_path, monkeypatch):
-    missing_store = LancePluginConfigVectorStore(
-        tmp_path / "missing",
-        "plugin_config_docs",
-    )
-    with pytest.raises(StartupValidationError, match="目录不存在"):
-        missing_store.validate()
-
-    db_dir = tmp_path / "db"
-    db_dir.mkdir()
-
-    class _MissingTableDB:
-        def open_table(self, table_name):
-            raise RuntimeError("table missing")
-
-    monkeypatch.setattr(
-        plugin_config_vector_store_module.lancedb,
-        "connect",
-        lambda _: _MissingTableDB(),
-    )
-    missing_table_store = LancePluginConfigVectorStore(db_dir, "plugin_config_docs")
-    with pytest.raises(StartupValidationError, match="无法打开配置向量表"):
-        missing_table_store.validate()
-
-    class _MissingFieldTable:
-        def to_arrow(self):
-            return pa.table(
-                {
-                    "id": [1],
-                    "content": ["mob-level: 5"],
-                    "plugin_chinese_name": ["MMORPG"],
-                    "plugin_english_name": ["MMORPG"],
-                    "embedding": [[0.0, 1.0]],
-                }
-            )
-
-    class _MissingFieldDB:
-        def open_table(self, table_name):
-            return _MissingFieldTable()
-
-    monkeypatch.setattr(
-        plugin_config_vector_store_module.lancedb,
-        "connect",
-        lambda _: _MissingFieldDB(),
-    )
-    missing_field_store = LancePluginConfigVectorStore(db_dir, "plugin_config_docs")
-    with pytest.raises(StartupValidationError, match="缺少必要字段"):
-        missing_field_store.validate()
-
-
 def test_analyze_question_tool_returns_plan_json():
     configure_planning_tool(PlanningToolContext(client=FakePlanningClient()))
 
@@ -1363,6 +1553,25 @@ def test_analyze_question_tool_returns_plan_json():
     assert data["need_multi_query"] is True
     assert data["need_plugins"] is True
     assert len(data["queries"]) == 3
+
+
+def test_analyze_question_tool_context_survives_cross_thread_invocation():
+    configure_planning_tool(PlanningToolContext(client=FakePlanningClient()))
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            analyze_question.invoke,
+            {
+                "question": "How to configure plugin?",
+                "history": "Previous chat",
+                "retrieval_summary": "No retrieval summary.",
+            },
+        )
+        output = future.result(timeout=5)
+
+    data = json.loads(output)
+    assert data["standalone_query"] == "plugin config issue"
+    assert data["need_multi_query"] is True
 
 
 def test_route_plugin_config_request_returns_subagent_route():
@@ -1382,6 +1591,28 @@ def test_route_plugin_config_request_returns_subagent_route():
     assert data["use_subagent"] is True
     assert data["normalized_query"] == "How should I set the plugin config defaults?"
     assert "defaults" in data["reason"]
+
+
+def test_retrieve_plugin_configs_tool_context_survives_cross_thread_invocation():
+    configure_plugin_config_tool(
+        PluginConfigToolContext(
+            retriever=FakeSemanticMemoryRetriever(),
+            summarizer_client=FakePluginConfigSummaryClient(),
+            top_k=2,
+            preview_chars=80,
+            summary_max_chars=200,
+        )
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            retrieve_plugin_configs.invoke,
+            {"search_query": "MMORPG mob config"},
+        )
+        output = future.result(timeout=5)
+
+    assert "MMORPG" in output
+    assert "config.yml" in output
 
 
 def test_route_plugin_config_request_defaults_to_main_agent():
@@ -1579,6 +1810,22 @@ def test_judge_retrieval_freshness_tool_assesses_turn_docs():
     assert "version-agnostic" in data["reason"]
 
 
+def test_server_plugins_tool_returns_turn_context_plugins():
+    plugins = [
+        "EssentialsX 2.20.1 (enabled)",
+        "ViaVersion 5.2.1 (enabled)",
+    ]
+
+    start_turn_context()
+    try:
+        record_server_plugins(plugins)
+        output = get_server_plugins_list.invoke({})
+    finally:
+        clear_turn_context()
+
+    assert output == plugins
+
+
 def test_judge_answer_quality_tool_scores_draft_answer():
     configure_planning_tool(PlanningToolContext(client=FakeAnswerJudgeClient()))
     configure_judge_answer_quality_tool(JudgeAnswerQualityToolContext())
@@ -1668,11 +1915,42 @@ def test_rag_chat_session_uses_deep_agent():
     assert isinstance(session._history[-1], AIMessage)
 
 
+def test_rag_chat_session_exposes_server_plugins_to_tools():
+    class PluginAwareDeepAgent:
+        def __init__(self):
+            self.plugins: list[str] = []
+
+        def invoke(self, payload):
+            self.plugins = get_server_plugins_list.invoke({})
+            return {"messages": [AIMessage(content="deep answer")]}
+
+    agent = PluginAwareDeepAgent()
+    session = RagChatSession(
+        settings=make_settings(),
+        vector_store=FakeVectorStore(),
+        deep_agent=agent,
+    )
+
+    result = session.ask(
+        "which plugins are installed?",
+        server_plugins=[
+            "EssentialsX 2.20.1 (enabled)",
+            "ViaVersion 5.2.1 (enabled)",
+        ],
+    )
+
+    assert result.answer == "deep answer"
+    assert agent.plugins == [
+        "EssentialsX 2.20.1 (enabled)",
+        "ViaVersion 5.2.1 (enabled)",
+    ]
+
+
 def test_rag_chat_session_recalls_and_writes_memory(tmp_path):
     settings = replace(
         make_settings(),
         memory_enabled=True,
-        memory_db_path=tmp_path / "memory.sqlite3",
+        user_semantic_memory_db_path=tmp_path / "user_semantic_memory.sqlite3",
         memory_recall_limit=3,
         memory_min_confidence=0.75,
         memory_consolidation_turns=2,
@@ -1814,7 +2092,7 @@ def test_validate_memory_actions_enforces_rules():
 
 
 def test_sqlite_memory_store_deletes_and_migrates_legacy_rows(tmp_path):
-    db_path = tmp_path / "memory.sqlite3"
+    db_path = tmp_path / "user_semantic_memory.sqlite3"
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
@@ -1877,7 +2155,7 @@ def test_sqlite_memory_store_deletes_and_migrates_legacy_rows(tmp_path):
 
 
 def test_memory_store_scopes_by_user(tmp_path):
-    db_path = tmp_path / "memory.sqlite3"
+    db_path = tmp_path / "user_semantic_memory.sqlite3"
     alice_store = SQLiteMemoryStore(db_path, scope_id="alice")
     bob_store = SQLiteMemoryStore(db_path, scope_id="bob")
 

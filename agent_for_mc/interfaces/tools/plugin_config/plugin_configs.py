@@ -16,7 +16,7 @@ def retrieve_plugin_configs(
     search_query: str | None = None,
     query: str | None = None,
 ) -> str:
-    """Retrieve plugin configuration files and summarize the relevant settings."""
+    """Retrieve uploaded server configuration semantic memory and summarize relevant settings."""
     effective_search_query = search_query or query or ""
     with trace_operation(
         "tool.retrieve_plugin_configs",

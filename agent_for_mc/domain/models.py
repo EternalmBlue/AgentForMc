@@ -15,17 +15,6 @@ class RetrievedDoc:
 
 
 @dataclass(slots=True)
-class PluginConfigDoc:
-    id: int
-    plugin_chinese_name: str
-    plugin_english_name: str
-    file_path: str
-    content: str
-    distance: float
-    match_reason: str = "vector"
-
-
-@dataclass(slots=True)
 class SemanticMemoryEntry:
     server_id: str
     plugin_name: str

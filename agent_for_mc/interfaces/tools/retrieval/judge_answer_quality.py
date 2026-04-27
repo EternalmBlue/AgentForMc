@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import get_turn_context
 from agent_for_mc.application.retrieval_tool import format_docs_for_tool
+from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 from agent_for_mc.interfaces.tools.routing.planning import get_planning_tool_context
 
 
@@ -45,9 +45,8 @@ class JudgeAnswerQualityToolContext:
     pass
 
 
-_TOOL_CONTEXT: ContextVar[JudgeAnswerQualityToolContext | None] = ContextVar(
-    "judge_answer_quality_tool_context",
-    default=None,
+_TOOL_CONTEXT = SharedContextSlot[JudgeAnswerQualityToolContext](
+    "judge_answer_quality_tool_context"
 )
 
 
@@ -56,10 +55,9 @@ def configure_judge_answer_quality_tool(context: JudgeAnswerQualityToolContext) 
 
 
 def get_judge_answer_quality_tool_context() -> JudgeAnswerQualityToolContext:
-    context = _TOOL_CONTEXT.get()
-    if context is None:
-        raise RuntimeError("judge_answer_quality tool context has not been configured")
-    return context
+    return _TOOL_CONTEXT.get(
+        error_message="judge_answer_quality tool context has not been configured"
+    )
 
 
 @tool("judge_answer_quality")

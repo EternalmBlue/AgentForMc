@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 from agent_for_mc.domain.models import SemanticMemoryDoc
-from agent_for_mc.infrastructure.clients import JinaEmbeddingClient
+from agent_for_mc.infrastructure.clients import EmbeddingClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.semantic_memory_vector_store import (
     LanceSemanticMemoryVectorStore,
@@ -21,7 +21,7 @@ def normalize_semantic_query(search_query: str) -> str:
 @dataclass(slots=True)
 class SemanticMemoryRetriever:
     vector_store: LanceSemanticMemoryVectorStore
-    embedding_client: JinaEmbeddingClient
+    embedding_client: EmbeddingClient
 
     def retrieve(
         self,
