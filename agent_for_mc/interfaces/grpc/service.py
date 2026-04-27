@@ -18,6 +18,7 @@ from agent_for_mc.interfaces.grpc.runtime import (
     NotFoundError,
     PrepareSyncReply,
     ServerPlugin,
+    AskStreamEvent,
     SyncState,
     SyncStatusSnapshot,
     UploadChunk,
@@ -27,6 +28,7 @@ from agent_for_mc.interfaces.grpc.runtime import (
 
 BRIDGE_PROTOCOL_VERSION = 1
 BACKEND_NAME = "AgentForMc"
+CAPABILITY_ASK_STREAM_PROGRESS = "ask_stream_progress"
 
 
 class AgentBridgeService(agent_bridge_pb2_grpc.AgentBridgeServiceServicer):
@@ -50,39 +52,25 @@ class AgentBridgeService(agent_bridge_pb2_grpc.AgentBridgeServiceServicer):
             backend_name=BACKEND_NAME,
             backend_version=self._backend_version,
             protocol_version=BRIDGE_PROTOCOL_VERSION,
+            capabilities=[CAPABILITY_ASK_STREAM_PROGRESS],
         )
 
     def Ask(self, request, context):
         self._require_authorization(context)
         try:
-            reply = self._runtime.ask(
-                AskCommand(
-                    server_id=request.server_id,
-                    server_instance_id=request.server_instance_id,
-                    player_id=request.player_id,
-                    player_name=request.player_name,
-                    question=request.question,
-                    request_id=request.request_id,
-                    timestamp_ms=request.timestamp,
-                    installed_plugins=[
-                        ServerPlugin(
-                            name=plugin.name,
-                            version=plugin.version,
-                            enabled=plugin.enabled,
-                        )
-                        for plugin in request.installed_plugins
-                    ],
-                )
-            )
+            reply = self._runtime.ask(_build_ask_command(request))
         except Exception as exc:  # pragma: no cover - exercised via gRPC tests
             self._abort_from_exception(context, exc)
 
-        return agent_bridge_pb2.AskResponse(
-            request_id=reply.request_id,
-            answer=reply.answer,
-            citations_summary=reply.citations_summary,
-            backend_trace_id=reply.backend_trace_id,
-        )
+        return _build_ask_response(reply)
+
+    def AskStream(self, request, context):
+        self._require_authorization(context)
+        try:
+            for event in self._runtime.ask_stream(_build_ask_command(request)):
+                yield _build_ask_event(event)
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
 
     def PrepareSync(self, request, context):
         self._require_authorization(context)
@@ -170,6 +158,52 @@ def _resolve_backend_version() -> str:
         except PackageNotFoundError:
             continue
     return "dev"
+
+
+def _build_ask_command(request) -> AskCommand:
+    return AskCommand(
+        server_id=request.server_id,
+        server_instance_id=request.server_instance_id,
+        player_id=request.player_id,
+        player_name=request.player_name,
+        question=request.question,
+        request_id=request.request_id,
+        timestamp_ms=request.timestamp,
+        installed_plugins=[
+            ServerPlugin(
+                name=plugin.name,
+                version=plugin.version,
+                enabled=plugin.enabled,
+            )
+            for plugin in request.installed_plugins
+        ],
+    )
+
+
+def _build_ask_response(reply) -> agent_bridge_pb2.AskResponse:
+    return agent_bridge_pb2.AskResponse(
+        request_id=reply.request_id,
+        answer=reply.answer,
+        citations_summary=reply.citations_summary,
+        backend_trace_id=reply.backend_trace_id,
+    )
+
+
+def _build_ask_event(event: AskStreamEvent) -> agent_bridge_pb2.AskEvent:
+    if event.reply is not None:
+        return agent_bridge_pb2.AskEvent(response=_build_ask_response(event.reply))
+    if event.progress is not None:
+        progress = event.progress
+        return agent_bridge_pb2.AskEvent(
+            progress=agent_bridge_pb2.AskProgress(
+                request_id=progress.request_id,
+                stage=progress.stage,
+                message=progress.message,
+                elapsed_ms=progress.elapsed_ms,
+                sequence=progress.sequence,
+            )
+        )
+    raise BridgeRuntimeError("empty ask stream event")
 
 
 def _iter_upload_chunks(

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from agent_for_mc.application.deepagent_state import (
     clear_turn_context,
     consume_turn_context,
+    record_progress,
     record_server_plugins,
     record_standalone_query,
     start_turn_context,
@@ -65,6 +66,7 @@ class RagChatSession:
         question: str,
         *,
         server_plugins: list[str] | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> AnswerResult:
         with trace_operation(
             "session.ask",
@@ -76,8 +78,14 @@ class RagChatSession:
             standalone_query = question.strip()
             memory_messages: list[BaseMessage] = []
 
+            _emit_progress(progress_callback, "started", "Ask request accepted.")
             if self._memory_service is not None:
                 try:
+                    _emit_progress(
+                        progress_callback,
+                        "memory_recall",
+                        "Recalling long-term memory.",
+                    )
                     memory_records = self._memory_service.recall(
                         question,
                         history_text=format_history(history),
@@ -92,13 +100,24 @@ class RagChatSession:
                                 )
                             )
                         )
+                    _emit_progress(
+                        progress_callback,
+                        "memory_ready",
+                        "Long-term memory context is ready.",
+                    )
                 except Exception:
                     memory_messages = []
+                    _emit_progress(
+                        progress_callback,
+                        "memory_ready",
+                        "Long-term memory recall was skipped.",
+                    )
 
-            start_turn_context()
+            start_turn_context(progress_callback=progress_callback)
             record_standalone_query(standalone_query)
             record_server_plugins(server_plugins or [])
             try:
+                record_progress("agent_running", "Planning retrieval and answer generation.")
                 state = self._deep_agent.invoke(
                     {
                         "messages": [
@@ -114,6 +133,7 @@ class RagChatSession:
 
                 turn = consume_turn_context()
                 citations = list(turn.retrieved_docs if turn else [])
+                _emit_progress(progress_callback, "answer_ready", "Answer generation completed.")
                 result = AnswerResult(
                     answer=answer_text,
                     citations=citations,
@@ -123,6 +143,11 @@ class RagChatSession:
                 )
                 if self._memory_service is not None:
                     try:
+                        _emit_progress(
+                            progress_callback,
+                            "memory_write",
+                            "Recording this turn into long-term memory.",
+                        )
                         self._memory_service.observe_turn(question, result.answer)
                     except Exception:
                         pass
@@ -133,6 +158,7 @@ class RagChatSession:
 
             self._history.append(HumanMessage(content=question))
             self._history.append(AIMessage(content=result.answer))
+            _emit_progress(progress_callback, "completed", "Ask request completed.")
             return result
 
 
@@ -157,3 +183,13 @@ def _extract_agent_answer(state: object) -> str:
             return output.strip()
 
     return ""
+
+
+def _emit_progress(
+    progress_callback: Callable[[str, str], None] | None,
+    stage: str,
+    message: str,
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(stage, message)

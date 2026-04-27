@@ -5,6 +5,7 @@ package agentbridge.v1;
 service AgentBridgeService {
   rpc Probe(ProbeRequest) returns (ProbeResponse);
   rpc Ask(AskRequest) returns (AskResponse);
+  rpc AskStream(AskRequest) returns (stream AskEvent);
   rpc PrepareSync(SyncPrepareRequest) returns (SyncPrepareResponse);
   rpc UploadFileChunk(stream FileChunkUploadRequest) returns (FileChunkUploadResponse);
   rpc CommitSync(SyncCommitRequest) returns (SyncCommitResponse);
@@ -25,6 +26,7 @@ message ProbeResponse {
   string backend_name = 3;
   string backend_version = 4;
   int32 protocol_version = 5;
+  repeated string capabilities = 6;
 }
 
 message ServerPlugin {
@@ -49,6 +51,21 @@ message AskResponse {
   string answer = 2;
   string citations_summary = 3;
   string backend_trace_id = 4;
+}
+
+message AskProgress {
+  string request_id = 1;
+  string stage = 2;
+  string message = 3;
+  int64 elapsed_ms = 4;
+  int32 sequence = 5;
+}
+
+message AskEvent {
+  oneof event {
+    AskProgress progress = 1;
+    AskResponse response = 2;
+  }
 }
 
 message FileManifestEntry {
