@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Callable
 
 from agent_for_mc.domain.models import RetrievedDoc
 
@@ -11,6 +12,7 @@ class DeepAgentTurnContext:
     standalone_query: str = ""
     retrieved_docs: list[RetrievedDoc] = field(default_factory=list)
     server_plugins: list[str] = field(default_factory=list)
+    progress_callback: Callable[[str, str], None] | None = field(default=None, repr=False)
 
     @property
     def rewritten_question(self) -> str:
@@ -27,8 +29,10 @@ _TURN_CONTEXT: ContextVar[DeepAgentTurnContext | None] = ContextVar(
 )
 
 
-def start_turn_context() -> None:
-    _TURN_CONTEXT.set(DeepAgentTurnContext())
+def start_turn_context(
+    progress_callback: Callable[[str, str], None] | None = None,
+) -> None:
+    _TURN_CONTEXT.set(DeepAgentTurnContext(progress_callback=progress_callback))
 
 
 def consume_turn_context() -> DeepAgentTurnContext | None:
@@ -80,3 +84,10 @@ def record_server_plugins(plugins: list[str]) -> None:
             continue
         seen_plugins.add(plugin)
         context.server_plugins.append(plugin)
+
+
+def record_progress(stage: str, message: str = "") -> None:
+    context = _TURN_CONTEXT.get()
+    if context is None or context.progress_callback is None:
+        return
+    context.progress_callback(stage, message)

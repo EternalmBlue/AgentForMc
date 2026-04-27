@@ -7,7 +7,9 @@ import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from queue import Queue
 from threading import Lock
+from threading import Thread
 from time import time
 from typing import Callable, Iterable
 from uuid import uuid4
@@ -87,6 +89,21 @@ class AskReply:
     answer: str
     citations_summary: str
     backend_trace_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AskProgress:
+    request_id: str
+    stage: str
+    message: str
+    elapsed_ms: int
+    sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class AskStreamEvent:
+    progress: AskProgress | None = None
+    reply: AskReply | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,11 +197,16 @@ class SessionRegistry:
         question: str,
         *,
         server_plugins: list[str] | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> AnswerResult:
         handle = self._get_or_create(memory_scope_id)
         with handle.lock:
             handle.last_used_epoch_ms = _now_ms()
-            return handle.session.ask(question, server_plugins=server_plugins)
+            return handle.session.ask(
+                question,
+                server_plugins=server_plugins,
+                progress_callback=progress_callback,
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -374,35 +396,100 @@ class AgentBridgeRuntime:
             metric_name="rag_grpc_bridge_ask_seconds",
         ):
             record_counter("rag_grpc_bridge_ask_requests_total")
-            question = command.question.strip()
-            if not question:
-                raise InvalidRequestError("question must not be blank")
+            return self._execute_ask(command)
 
-            server_id, _ = self._validate_server_identity(
-                server_id=command.server_id,
-                server_instance_id=command.server_instance_id,
-            )
-            player_scope = command.player_id.strip() or command.player_name.strip()
-            if not player_scope:
-                raise InvalidRequestError("player_id or player_name must be provided")
+    def ask_stream(self, command: AskCommand) -> Iterable[AskStreamEvent]:
+        request_id = command.request_id.strip() or uuid4().hex
+        started_at_ms = _now_ms()
+        sequence = 0
+        sequence_lock = Lock()
+        queue: Queue[AskStreamEvent | Exception | object] = Queue()
+        sentinel = object()
 
-            scope_id = f"{server_id}:{player_scope}"
-            server_plugins = _format_installed_plugins(command.installed_plugins)
-            try:
-                result = self._session_registry.ask(
-                    scope_id,
-                    question,
-                    server_plugins=server_plugins,
+        def emit_progress(stage: str, message: str = "") -> None:
+            nonlocal sequence
+            normalized_stage = " ".join(str(stage).strip().lower().split()) or "running"
+            normalized_stage = normalized_stage.replace(" ", "_")
+            with sequence_lock:
+                sequence += 1
+                current_sequence = sequence
+            queue.put(
+                AskStreamEvent(
+                    progress=AskProgress(
+                        request_id=request_id,
+                        stage=normalized_stage,
+                        message=str(message or "").strip(),
+                        elapsed_ms=max(0, _now_ms() - started_at_ms),
+                        sequence=current_sequence,
+                    )
                 )
-            except RagForMcError as exc:
-                raise BridgeRuntimeError(str(exc)) from exc
-
-            return AskReply(
-                request_id=command.request_id.strip() or uuid4().hex,
-                answer=result.answer,
-                citations_summary=_summarize_citations(result.citations),
-                backend_trace_id=command.request_id.strip(),
             )
+
+        def run() -> None:
+            try:
+                reply = self._execute_ask(
+                    command,
+                    progress_callback=emit_progress,
+                    resolved_request_id=request_id,
+                )
+                queue.put(AskStreamEvent(reply=reply))
+            except Exception as exc:  # pragma: no cover - surfaced through service tests
+                queue.put(exc)
+            finally:
+                queue.put(sentinel)
+
+        Thread(
+            target=run,
+            name=f"agent4mc-ask-stream-{request_id[:12]}",
+            daemon=True,
+        ).start()
+
+        while True:
+            item = queue.get()
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+    def _execute_ask(
+        self,
+        command: AskCommand,
+        *,
+        progress_callback: Callable[[str, str], None] | None = None,
+        resolved_request_id: str | None = None,
+    ) -> AskReply:
+        question = command.question.strip()
+        if not question:
+            raise InvalidRequestError("question must not be blank")
+
+        server_id, _ = self._validate_server_identity(
+            server_id=command.server_id,
+            server_instance_id=command.server_instance_id,
+        )
+        player_scope = command.player_id.strip() or command.player_name.strip()
+        if not player_scope:
+            raise InvalidRequestError("player_id or player_name must be provided")
+
+        scope_id = f"{server_id}:{player_scope}"
+        server_plugins = _format_installed_plugins(command.installed_plugins)
+        try:
+            result = self._session_registry.ask(
+                scope_id,
+                question,
+                server_plugins=server_plugins,
+                progress_callback=progress_callback,
+            )
+        except RagForMcError as exc:
+            raise BridgeRuntimeError(str(exc)) from exc
+
+        request_id = resolved_request_id or command.request_id.strip() or uuid4().hex
+        return AskReply(
+            request_id=request_id,
+            answer=result.answer,
+            citations_summary=_summarize_citations(result.citations),
+            backend_trace_id=command.request_id.strip(),
+        )
 
     def prepare_sync(
         self,

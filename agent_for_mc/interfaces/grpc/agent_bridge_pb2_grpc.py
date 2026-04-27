@@ -44,6 +44,11 @@ class AgentBridgeServiceStub(object):
                 request_serializer=agent__bridge__pb2.AskRequest.SerializeToString,
                 response_deserializer=agent__bridge__pb2.AskResponse.FromString,
                 _registered_method=True)
+        self.AskStream = channel.unary_stream(
+                '/agentbridge.v1.AgentBridgeService/AskStream',
+                request_serializer=agent__bridge__pb2.AskRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.AskEvent.FromString,
+                _registered_method=True)
         self.PrepareSync = channel.unary_unary(
                 '/agentbridge.v1.AgentBridgeService/PrepareSync',
                 request_serializer=agent__bridge__pb2.SyncPrepareRequest.SerializeToString,
@@ -76,6 +81,12 @@ class AgentBridgeServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Ask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AskStream(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -117,6 +128,11 @@ def add_AgentBridgeServiceServicer_to_server(servicer, server):
                     servicer.Ask,
                     request_deserializer=agent__bridge__pb2.AskRequest.FromString,
                     response_serializer=agent__bridge__pb2.AskResponse.SerializeToString,
+            ),
+            'AskStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.AskStream,
+                    request_deserializer=agent__bridge__pb2.AskRequest.FromString,
+                    response_serializer=agent__bridge__pb2.AskEvent.SerializeToString,
             ),
             'PrepareSync': grpc.unary_unary_rpc_method_handler(
                     servicer.PrepareSync,
@@ -193,6 +209,33 @@ class AgentBridgeService(object):
             '/agentbridge.v1.AgentBridgeService/Ask',
             agent__bridge__pb2.AskRequest.SerializeToString,
             agent__bridge__pb2.AskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AskStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/AskStream',
+            agent__bridge__pb2.AskRequest.SerializeToString,
+            agent__bridge__pb2.AskEvent.FromString,
             options,
             channel_credentials,
             insecure,
