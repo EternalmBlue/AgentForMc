@@ -1,38 +1,38 @@
-# This file only contains overrides.
-# Secrets stay in .env.
+# 本文件只放需要覆盖默认值的配置。
+# 密钥请继续放在 .env 中。
 #
-# Common local deployment:
-# - You usually do not need to change this file
-# - gRPC listens on 127.0.0.1:50051 by default
-# - Minecraft config sync and semantic refresh are enabled by default
-# - Uploaded server configs are stored under ./mc_servers
-# - Plugin docs vectors are stored under ./data/plugin_docs_vector_db
-# - Uploaded server config semantics are stored under ./data/server_config_semantic_vector_db
-# - User long-term semantic memory is stored under ./data/user_semantic_memory.sqlite3 when enabled
-# - server.id to server instance bindings are stored under ./data/server_instance_bindings.json
-# - Embeddings use Zhipu embedding-3 over an OpenAI-compatible endpoint
-# - Embedding dimensions follow embedding.dimensions
+# 常见本地部署说明：
+# - 通常不需要修改这个文件
+# - gRPC 默认监听 127.0.0.1:50051
+# - Minecraft 配置同步和语义刷新默认启用
+# - 上传的服务器配置存放在 ./mc_servers
+# - 插件文档向量存放在 ./data/plugin_docs_vector_db
+# - 上传的服务器配置语义记忆存放在 ./data/server_config_semantic_vector_db
+# - 启用用户长期语义记忆后，数据存放在 ./data/user_semantic_memory.sqlite3
+# - server.id 与服务器实例的绑定关系存放在 ./data/server_instance_bindings.json
+# - Embedding 默认使用兼容 OpenAI 接口的智谱 embedding-3
+# - Embedding 维度由 embedding.dimensions 决定
 
 [reranker]
 enabled = true
 
-# Only add the sections below when you really need them.
+# 只有确实需要覆盖默认值时，才添加下面这些配置段。
 #
-# Override the Zhipu embedding endpoint or model:
+# 覆盖智谱 embedding 接口地址或模型：
 # [embedding]
 # url = "https://open.bigmodel.cn/api/paas/v4/embeddings"
 # model = "embedding-3"
 # dimensions = 1024
 #
-# Important:
-# - embedding.dimensions must be one of 256, 512, 1024, 2048
-# - If you change the dimension, rebuild the existing vector tables
+# 注意：
+# - embedding.dimensions 必须是 256、512、1024、2048 之一
+# - 如果修改维度，需要重建已有向量表
 #
-# Change where plugin docs vectors are stored:
+# 修改插件文档向量存储位置：
 # [paths]
 # plugin_docs_vector_db_dir = "data/plugin_docs_vector_db"
 #
-# Change plugin docs retrieval settings:
+# 修改插件文档检索设置：
 # [plugin_docs_store]
 # table_name = "plugin_docs"
 # retrieval_top_k = 5
@@ -40,30 +40,30 @@ enabled = true
 # bm25_top_k = 7
 # bm25_auto_create_index = true
 #
-# Change where uploaded-server config semantic vectors are stored:
+# 修改上传服务器配置语义向量的存储位置：
 # [server_config_semantic_store]
 # db_dir = "data/server_config_semantic_vector_db"
 # table_name = "server_config_semantic_memories"
 #
-# Expose gRPC to another machine:
+# 允许其他机器访问 gRPC：
 # [grpc]
 # host = "0.0.0.0"
 # port = 50051
 #
-# Change where uploaded Minecraft configs are stored:
+# 修改上传的 Minecraft 配置存储位置：
 # [plugin_semantic_agent]
 # mc_servers_root = "mc_servers"
 #
-# Change where server.id bindings are stored:
+# 修改 server.id 绑定关系的存储位置：
 # [server_identity]
 # bindings_path = "data/server_instance_bindings.json"
 #
-# Enable long-term memory:
+# 启用长期记忆：
 # [memory]
 # enabled = true
 # db_path = "data/user_semantic_memory.sqlite3"
 #
-# Enable observability:
+# 启用可观测性：
 # [observability]
 # langsmith_enabled = true
 # otel_enabled = true
