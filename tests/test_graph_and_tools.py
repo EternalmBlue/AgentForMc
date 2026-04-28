@@ -2,11 +2,14 @@
 
 import os
 import sqlite3
+from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 import json
 
+import grpc
 import lancedb
 import pytest
 
@@ -47,7 +50,10 @@ from agent_for_mc.infrastructure.clients import (
 )
 from agent_for_mc.infrastructure.memory_store import MemoryAction, MemoryCandidate, SQLiteMemoryStore
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
-from agent_for_mc.domain.errors import ConfigurationError
+from agent_for_mc.domain.errors import ConfigurationError, ServiceError
+from agent_for_mc.infrastructure.ranker import GrpcRerankerClient
+from agent_for_mc.interfaces.grpc import reranker_pb2, reranker_pb2_grpc
+from agent_for_mc.interfaces.runtime_validation import validate_runtime_settings
 from agent_for_mc.interfaces.deepagent import build_deep_agent
 from agent_for_mc.interfaces.deepagent import main_agent as deepagent_main_agent_module
 from agent_for_mc.interfaces.deepagent import memory_agent as deepagent_memory_agent_module
@@ -634,6 +640,7 @@ def test_settings_from_env_loads_dotenv_and_config(tmp_path, monkeypatch):
 RAG_ZHIPU_API_KEY=test-zhipu-key
 RAG_DEEPSEEK_API_KEY=test-deepseek-key
 RAG_GRPC_AUTH_TOKEN=test-grpc-token
+RAG_RERANKER_GRPC_AUTH_TOKEN=test-reranker-token
 """.strip(),
         encoding="utf-8",
     )
@@ -661,6 +668,9 @@ rewrite_history_turns = 4
 [reranker]
 enabled = true
 model_name_or_path = "maidalun1020/bce-reranker-base_v1"
+host = "127.0.0.2"
+port = 50053
+timeout_seconds = 12.5
 
 [plugin_config_agent]
 model = "deepseek-lite"
@@ -705,6 +715,7 @@ upload_tmp_dir = ".cache/grpc_uploads"
     monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_RERANKER_GRPC_AUTH_TOKEN", raising=False)
 
     settings = Settings.from_env()
 
@@ -720,6 +731,10 @@ upload_tmp_dir = ".cache/grpc_uploads"
     assert settings.deepseek_api_key == "test-deepseek-key"
     assert settings.reranker_enabled is True
     assert settings.reranker_model_name_or_path == "maidalun1020/bce-reranker-base_v1"
+    assert settings.reranker_host == "127.0.0.2"
+    assert settings.reranker_port == 50053
+    assert settings.reranker_timeout_seconds == 12.5
+    assert settings.reranker_auth_token == "test-reranker-token"
     assert settings.plugin_config_agent_model == "deepseek-lite"
     assert settings.memory_maintenance_agent_model == "deepseek-mini"
     assert settings.memory_enabled is True
@@ -776,6 +791,7 @@ RAG_GRPC_AUTH_TOKEN=test-grpc-token
     monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_RERANKER_GRPC_AUTH_TOKEN", raising=False)
 
     settings = Settings.from_env()
 
@@ -794,6 +810,11 @@ RAG_GRPC_AUTH_TOKEN=test-grpc-token
     ).resolve()
     assert settings.grpc_host == "127.0.0.1"
     assert settings.grpc_port == 50051
+    assert settings.reranker_enabled is False
+    assert settings.reranker_host == "127.0.0.1"
+    assert settings.reranker_port == 50052
+    assert settings.reranker_timeout_seconds == 10.0
+    assert settings.reranker_auth_token is None
     assert settings.plugin_semantic_mc_servers_root == (tmp_path / "mc_servers").resolve()
     assert settings.plugin_semantic_agent_scan_on_startup is True
     assert settings.embedding_url == "https://open.bigmodel.cn/api/paas/v4/embeddings"
@@ -833,6 +854,7 @@ model = "bge-m3"
     monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_RERANKER_GRPC_AUTH_TOKEN", raising=False)
 
     settings = Settings.from_env()
 
@@ -841,6 +863,18 @@ model = "bge-m3"
     assert settings.resolved_embedding_url == "https://embeddings.example.com/v1/embeddings"
     assert settings.resolved_embedding_model == "bge-m3"
     assert settings.resolved_embedding_dimensions == 1024
+
+
+def test_runtime_validation_requires_reranker_token_when_enabled():
+    settings = replace(
+        make_settings(),
+        expected_embedding_dimension=1024,
+        reranker_enabled=True,
+        reranker_auth_token=None,
+    )
+
+    with pytest.raises(ConfigurationError, match="RAG_RERANKER_GRPC_AUTH_TOKEN"):
+        validate_runtime_settings(settings)
 
 
 def test_build_embedding_client_uses_zhipu_openai_payload(monkeypatch):
@@ -1265,6 +1299,48 @@ class FakeRanker:
         return list(reversed(docs))
 
 
+class FailingRanker:
+    def rank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
+        raise ServiceError("reranker unavailable")
+
+
+class RecordingRerankerService(reranker_pb2_grpc.RerankerServiceServicer):
+    def __init__(self):
+        self.authorization = ""
+        self.seen_query = ""
+        self.seen_documents: list[tuple[int, str, str]] = []
+
+    def Health(self, request, context):
+        return reranker_pb2.HealthResponse(ready=True, model_name="fake")
+
+    def Rerank(self, request, context):
+        self.authorization = dict(context.invocation_metadata()).get("authorization", "")
+        self.seen_query = request.query
+        self.seen_documents = [
+            (document.index, document.document_id, document.text)
+            for document in request.documents
+        ]
+        return reranker_pb2.RerankResponse(
+            request_id=request.request_id,
+            results=[
+                reranker_pb2.RankedDocument(index=1, document_id="2", score=0.9),
+                reranker_pb2.RankedDocument(index=0, document_id="1", score=0.2),
+            ],
+        )
+
+
+@contextmanager
+def running_recording_reranker(service: RecordingRerankerService):
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    reranker_pb2_grpc.add_RerankerServiceServicer_to_server(service, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        yield port
+    finally:
+        server.stop(None)
+
+
 def test_retriever_uses_ranker_when_configured():
     ranker = FakeRanker()
     retriever = Retriever(
@@ -1278,6 +1354,59 @@ def test_retriever_uses_ranker_when_configured():
     assert [doc.id for doc in docs] == [2, 1]
     assert ranker.last_query == "plugin"
     assert [doc.id for doc in ranker.last_docs] == [1, 2]
+
+
+def test_grpc_reranker_client_sends_auth_and_orders_docs():
+    service = RecordingRerankerService()
+    docs = [
+        RetrievedDoc(
+            id=1,
+            plugin_chinese_name="插件A",
+            plugin_english_name="PluginA",
+            content="first",
+            distance=0.1,
+        ),
+        RetrievedDoc(
+            id=2,
+            plugin_chinese_name="插件B",
+            plugin_english_name="PluginB",
+            content="second",
+            distance=0.2,
+        ),
+    ]
+
+    with running_recording_reranker(service) as port:
+        client = GrpcRerankerClient(
+            host="127.0.0.1",
+            port=port,
+            auth_token="secret-token",
+            timeout_seconds=5,
+        )
+        try:
+            ranked_docs = client.rank_docs("plugin", docs)
+        finally:
+            client.close()
+
+    assert [doc.id for doc in ranked_docs] == [2, 1]
+    assert service.authorization == "Bearer secret-token"
+    assert service.seen_query == "plugin"
+    assert service.seen_documents[0][0] == 0
+    assert service.seen_documents[0][1] == "1"
+    assert "PluginA" in service.seen_documents[0][2]
+
+
+def test_retriever_falls_back_when_ranker_fails():
+    retriever = Retriever(
+        FakeBM25VectorStore(),
+        FakeEmbeddingClient(),
+        ranker=FailingRanker(),
+        bm25_enabled=True,
+    )
+
+    docs = retriever.retrieve("plugin", top_k=3)
+
+    assert [doc.id for doc in docs] == [1, 2, 3]
+    assert docs[2].match_reason == "bm25"
 
 
 def test_retriever_adds_bm25_recall_path():
@@ -1333,24 +1462,30 @@ def test_lance_plugin_vector_store_searches_bm25(tmp_path):
     assert docs[0].distance > 0
 
 
-def test_build_session_warmups_ranker(monkeypatch):
-    warmed: list[str] = []
+def test_build_session_uses_remote_reranker_client(monkeypatch):
+    built_clients: list[Settings] = []
+    fake_ranker = object()
 
-    class FakeBceRanker:
-        def __init__(self, model_name_or_path: str):
-            self.model_name_or_path = model_name_or_path
+    def fake_build_reranker_client(settings):
+        built_clients.append(settings)
+        return fake_ranker
 
-        def warmup(self) -> None:
-            warmed.append(self.model_name_or_path)
+    monkeypatch.setattr(
+        session_factory_module,
+        "build_reranker_client",
+        fake_build_reranker_client,
+    )
 
-    monkeypatch.setattr(session_factory_module, "BceRanker", FakeBceRanker)
-
-    settings = replace(make_settings(), reranker_enabled=True)
+    settings = replace(
+        make_settings(),
+        reranker_enabled=True,
+        reranker_auth_token="reranker-token",
+    )
 
     session = session_factory_module.build_session(settings, memory_scope_id="test-user")
 
     assert isinstance(session, RagChatSession)
-    assert warmed == ["maidalun1020/bce-reranker-base_v1"]
+    assert built_clients == [settings]
 
 
 def test_build_session_does_not_auto_refresh_plugin_semantic_service(monkeypatch):

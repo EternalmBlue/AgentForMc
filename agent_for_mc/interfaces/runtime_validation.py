@@ -16,6 +16,16 @@ def validate_runtime_settings(
         raise ConfigurationError("Missing environment variable RAG_DEEPSEEK_API_KEY.")
     if settings.plugin_docs_bm25_enabled and settings.plugin_docs_bm25_top_k < 1:
         raise ConfigurationError("plugin_docs_store.bm25_top_k must be > 0.")
+    if settings.reranker_enabled:
+        if not settings.reranker_auth_token or not settings.reranker_auth_token.strip():
+            raise ConfigurationError(
+                "Missing reranker auth token. Set the environment variable "
+                "RAG_RERANKER_GRPC_AUTH_TOKEN."
+            )
+        if settings.reranker_port < 1 or settings.reranker_port > 65535:
+            raise ConfigurationError("reranker.port must be within 1..65535.")
+        if settings.reranker_timeout_seconds <= 0:
+            raise ConfigurationError("reranker.timeout_seconds must be > 0.")
     if settings.memory_enabled and settings.memory_consolidation_turns < 1:
         raise ConfigurationError("memory.consolidation_turns must be > 0.")
     if require_grpc:

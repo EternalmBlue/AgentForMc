@@ -4,8 +4,9 @@ import re
 from dataclasses import replace
 
 from agent_for_mc.domain.models import RetrievedDoc
+from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.infrastructure.clients import EmbeddingClient
-from agent_for_mc.infrastructure.ranker import BceRanker
+from agent_for_mc.infrastructure.ranker import Ranker
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
@@ -23,7 +24,7 @@ class Retriever:
         self,
         vector_store: LancePluginVectorStore,
         embedding_client: EmbeddingClient,
-        ranker: BceRanker | None = None,
+        ranker: Ranker | None = None,
         *,
         bm25_enabled: bool = True,
         bm25_top_k: int | None = None,
@@ -53,13 +54,26 @@ class Retriever:
             bm25_docs = self._search_by_bm25(normalized_search_query, top_k=top_k)
             merged_docs = merge_retrieved_docs(boosted_docs, vector_docs, bm25_docs)
             if self._ranker is not None:
-                reranked_docs = self._ranker.rank_docs(
-                    normalized_search_query,
-                    merged_docs,
-                )
-                return reranked_docs[:top_k]
-            fused_docs = fuse_ranked_docs(vector_docs, bm25_docs)
-            return merge_retrieved_docs(boosted_docs, fused_docs, top_k=top_k)
+                try:
+                    reranked_docs = self._ranker.rank_docs(
+                        normalized_search_query,
+                        merged_docs,
+                    )
+                    return reranked_docs[:top_k]
+                except ServiceError:
+                    record_counter("rag_ranker_fallbacks_total")
+            return self._fallback_results(boosted_docs, vector_docs, bm25_docs, top_k=top_k)
+
+    def _fallback_results(
+        self,
+        boosted_docs: list[RetrievedDoc],
+        vector_docs: list[RetrievedDoc],
+        bm25_docs: list[RetrievedDoc],
+        *,
+        top_k: int,
+    ) -> list[RetrievedDoc]:
+        fused_docs = fuse_ranked_docs(vector_docs, bm25_docs)
+        return merge_retrieved_docs(boosted_docs, fused_docs, top_k=top_k)
 
     def _search_by_bm25(self, search_query: str, *, top_k: int) -> list[RetrievedDoc]:
         if not self._bm25_enabled:

@@ -40,10 +40,19 @@ jobs:
             requirements.txt
             requirements-build.txt
 
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install Linux CPU PyTorch
+        if: matrix.os_name == 'linux'
+        run: python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.3.1+cpu"
+
       - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-build.txt
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Verify Linux CPU PyTorch
+        if: matrix.os_name == 'linux'
+        run: python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.version.cuda is None"
 
       - name: Run tests
         run: python -m pytest

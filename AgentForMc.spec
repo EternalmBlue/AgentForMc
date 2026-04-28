@@ -50,17 +50,9 @@ for package_name in [
     "langchain_openai",
     "langgraph",
     "langsmith",
-    "BCEmbedding",
     "opentelemetry",
 ]:
     collect_package(package_name)
-
-hiddenimports.extend(
-    collect_submodules("sentence_transformers")
-    + collect_submodules("transformers")
-    + collect_submodules("torch")
-    + collect_submodules("datasets")
-)
 
 for distribution_name in [
     "grpcio",
@@ -74,11 +66,6 @@ for distribution_name in [
     "langchain-openai",
     "langgraph",
     "langsmith",
-    "BCEmbedding",
-    "sentence-transformers",
-    "transformers",
-    "torch",
-    "datasets",
     "opentelemetry-api",
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp-proto-http",

@@ -10,6 +10,7 @@ AgentForMc 是 Agent4Minecraft 项目的 AI 后端。它通过 gRPC 接收 Minec
 | --- | --- | --- |
 | AgentForMc | AI 后端，负责 gRPC 服务、RAG、DeepAgent、语义记忆和配置摄取 | <https://github.com/EternalmBlue/AgentForMc> |
 | Agent4Minecraft | Minecraft 插件端，负责游戏内命令、配置扫描、脱敏和文件上传 | <https://github.com/EternalmBlue/Agent4Minecraft> |
+| AgentForMc-Reranker | 可选 reranker 中间件，单独承载 BCE 模型和重排 gRPC 服务 | 本地目录 `F:\AgentForMc-Reranker` |
 
 两个仓库通过同一份 gRPC 协议对接：
 
@@ -25,7 +26,7 @@ AgentForMc 是 Agent4Minecraft 项目的 AI 后端。它通过 gRPC 接收 Minec
 - 玩家问答：处理 `/askmc <问题>` 转发来的问题，返回最终答案和引用摘要。
 - DeepAgent 工作流：组合规划、检索、查询改写、HyDE、多查询、质量判断等工具。
 - 插件文档 RAG：基于 LanceDB 的插件文档向量检索，支持向量检索、名称命中增强和 BM25。
-- 可选 reranker：可启用 BCE reranker 对候选文档重排。
+- 可选远程 reranker：可连接 AgentForMc-Reranker 中间件对候选文档重排；中间件不可用时自动降级。
 - 服务端配置摄取：接收插件上传的服务器配置和插件配置。
 - 增量同步：根据 manifest 判断哪些文件需要上传。
 - 分块上传：通过 client-streaming gRPC 接收文件块并校验 SHA-256。
@@ -46,6 +47,7 @@ flowchart LR
     DeepAgent --> ConfigMemory["服务器配置语义记忆"]
     DeepAgent --> LLM["DeepSeek Chat"]
     Docs --> LanceDocs["data/plugin_docs_vector_db"]
+    Docs -. optional gRPC .-> Reranker["AgentForMc-Reranker"]
     ConfigMemory --> LanceConfig["data/server_config_semantic_vector_db"]
     Runtime --> Uploads["mc_servers/<server.id>/..."]
     Runtime --> Identity["data/server_instance_bindings.json"]
@@ -61,7 +63,7 @@ flowchart LR
 | `agent_for_mc/interfaces/deepagent` | DeepAgent 构建、主 agent、子 agent 和提示词 |
 | `agent_for_mc/interfaces/tools` | 检索、路由、查询改写、语义配置、刷新等工具 |
 | `agent_for_mc/application` | Chat session、RAG 检索、插件配置语义抽取和长期记忆服务 |
-| `agent_for_mc/infrastructure` | 配置、API 客户端、LanceDB、reranker、可观测性 |
+| `agent_for_mc/infrastructure` | 配置、API 客户端、LanceDB、远程 reranker 客户端、可观测性 |
 | `agent_for_mc/domain` | 领域模型和错误类型 |
 | `tests` | gRPC、工具、语义扫描、可观测性相关测试 |
 
@@ -81,7 +83,6 @@ flowchart LR
 - `langchain-core`
 - `langchain-deepseek`
 - `deepagents`
-- `BCEmbedding`
 - `requests`
 - `langsmith`
 - `opentelemetry-*`
@@ -137,6 +138,7 @@ cp .env.example .env
 RAG_ZHIPU_API_KEY=你的智谱APIKey
 RAG_DEEPSEEK_API_KEY=你的DeepSeekAPIKey
 RAG_GRPC_AUTH_TOKEN=change_me_to_a_strong_token
+RAG_RERANKER_GRPC_AUTH_TOKEN= # 仅启用远程 reranker 时需要
 ```
 
 `RAG_GRPC_AUTH_TOKEN` 必须和插件端 `plugins/Agent4Minecraft/config.yml` 中的 `backend.authToken` 一致。
@@ -186,6 +188,18 @@ python -m agent_for_mc.interfaces.grpc
 ```
 
 启动成功后，Minecraft 插件启动时会调用 `Probe`，日志中应能看到后端名称、协议版本和连接结果。
+
+### 可选：启用远程 reranker
+
+如果需要 reranker，先启动独立中间件，再启动本后端：
+
+```powershell
+cd F:\AgentForMc-Reranker
+$env:RAG_RERANKER_GRPC_AUTH_TOKEN="change_me_to_a_strong_token"
+python main.py
+```
+
+然后在本后端设置同一个 `RAG_RERANKER_GRPC_AUTH_TOKEN`，并把 `config.toml` 的 `[reranker].enabled` 改为 `true`。如果中间件未启动、超时或返回错误，后端会记录失败并降级使用 BM25/vector 融合结果。
 
 ## 与插件端联调
 
@@ -244,6 +258,7 @@ backend:
 | `RAG_ZHIPU_API_KEY` | 是 | 智谱 embedding API Key |
 | `RAG_DEEPSEEK_API_KEY` | 是 | DeepSeek Chat API Key |
 | `RAG_GRPC_AUTH_TOKEN` | 是 | 插件调用 gRPC 业务接口的 Bearer token |
+| `RAG_RERANKER_GRPC_AUTH_TOKEN` | 启用 reranker 时是 | 后端调用 AgentForMc-Reranker 的 Bearer token |
 | `RAG_CONFIG_TOML` | 否 | 覆盖默认 `config.toml` 路径 |
 | `RAG_LANGSMITH_API_KEY` | 否 | LangSmith 可观测性密钥 |
 | `RAG_OTEL_EXPORTER_OTLP_HEADERS` | 否 | OpenTelemetry OTLP headers |
@@ -300,7 +315,10 @@ enabled = false
 db_path = "data/user_semantic_memory.sqlite3"
 
 [reranker]
-enabled = true
+enabled = false
+host = "127.0.0.1"
+port = 50052
+timeout_seconds = 10
 
 [server_identity]
 bindings_path = "data/server_instance_bindings.json"
@@ -327,7 +345,7 @@ bindings_path = "data/server_instance_bindings.json"
 | `data/server_instance_bindings.json` | `server.id` 与 `server_instance_id` 的绑定关系 |
 | `mc_servers/<server.id>/...` | 插件上传后的 Minecraft 服务端配置文件 |
 | `.cache/grpc_uploads` | gRPC 文件上传临时目录 |
-| `.cache/models` | Hugging Face / Transformers / reranker 模型缓存 |
+| `.cache/models` | 后端模型相关缓存；reranker 模型缓存在 AgentForMc-Reranker 进程侧 |
 
 `data/`、`.cache/`、`mc_servers/` 和 `.env` 默认不应该提交到公开仓库。
 
@@ -545,7 +563,7 @@ data/server_instance_bindings.json
 - `server.id` 与 `server_instance_id` 绑定
 - DeepAgent 问答链路
 - 插件文档 LanceDB 检索
-- BM25 与可选 BCE reranker
+- BM25 与可选远程 reranker
 - 上传配置保存到 `mc_servers/<server.id>/...`
 - 上传配置语义抽取和增量刷新
 - 可选用户长期记忆

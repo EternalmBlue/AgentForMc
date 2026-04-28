@@ -7,7 +7,7 @@ from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.infrastructure.clients import build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import configure_observability
-from agent_for_mc.infrastructure.ranker import BceRanker
+from agent_for_mc.infrastructure.ranker import build_reranker_client
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 from agent_for_mc.interfaces.deepagent import (
     build_deep_agent,
@@ -35,8 +35,7 @@ def build_session(
     embedding_client = build_embedding_client(settings)
     resolved_ranker = ranker
     if resolved_ranker is None and settings.reranker_enabled:
-        resolved_ranker = BceRanker(settings.reranker_model_name_or_path)
-        resolved_ranker.warmup()
+        resolved_ranker = build_reranker_client(settings)
 
     retriever = Retriever(
         vector_store,

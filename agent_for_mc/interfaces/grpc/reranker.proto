@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package agentformc.reranker.v1;
+
+service RerankerService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Rerank(RerankRequest) returns (RerankResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ready = 1;
+  string model_name = 2;
+  string message = 3;
+}
+
+message RerankDocument {
+  int32 index = 1;
+  string document_id = 2;
+  string text = 3;
+}
+
+message RerankRequest {
+  string request_id = 1;
+  string query = 2;
+  repeated RerankDocument documents = 3;
+  int32 top_k = 4;
+}
+
+message RankedDocument {
+  int32 index = 1;
+  string document_id = 2;
+  double score = 3;
+}
+
+message RerankResponse {
+  string request_id = 1;
+  repeated RankedDocument results = 2;
+}

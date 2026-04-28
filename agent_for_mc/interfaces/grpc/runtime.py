@@ -31,7 +31,7 @@ from agent_for_mc.infrastructure.observability import (
     record_counter,
     trace_operation,
 )
-from agent_for_mc.infrastructure.ranker import BceRanker
+from agent_for_mc.infrastructure.ranker import build_reranker_client
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 from agent_for_mc.interfaces.session_factory import build_session
 
@@ -350,13 +350,7 @@ class AgentBridgeRuntime:
         self._settings.plugin_semantic_mc_servers_root.mkdir(parents=True, exist_ok=True)
         self._settings.grpc_upload_tmp_dir.mkdir(parents=True, exist_ok=True)
 
-        self._shared_ranker = (
-            BceRanker(settings.reranker_model_name_or_path)
-            if settings.reranker_enabled
-            else None
-        )
-        if self._shared_ranker is not None:
-            self._shared_ranker.warmup()
+        self._shared_ranker = build_reranker_client(settings)
 
         self._plugin_semantic_service = build_plugin_semantic_service(settings)
         self._session_registry = SessionRegistry(
@@ -386,6 +380,8 @@ class AgentBridgeRuntime:
 
     def close(self) -> None:
         self._session_registry.close()
+        if self._shared_ranker is not None:
+            self._shared_ranker.close()
         if self._plugin_semantic_service is not None:
             self._plugin_semantic_service.close()
 

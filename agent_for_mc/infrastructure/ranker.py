@@ -1,99 +1,120 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from threading import Lock
-from typing import Any
+from typing import Protocol
+from uuid import uuid4
 
-from agent_for_mc.domain.errors import ConfigurationError, ServiceError
+import grpc
+
+from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.domain.models import RetrievedDoc
-from agent_for_mc.infrastructure.observability import record_counter, trace_operation
+from agent_for_mc.interfaces.grpc import reranker_pb2, reranker_pb2_grpc
+
+
+class Ranker(Protocol):
+    def rank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
+        ...
 
 
 @dataclass(slots=True)
-class BceRanker:
-    model_name_or_path: str
-    _model: Any | None = None
-    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
-
-    def warmup(self) -> None:
-        """Load the underlying ranker model eagerly."""
-        with self._lock:
-            self._get_model()
-
-    def compute_scores(self, query: str, passages: list[str]) -> list[float]:
-        if not passages:
-            return []
-        with trace_operation(
-            "ranker.compute_scores",
-            attributes={"component": "ranker", "passage.count": len(passages)},
-            metric_name="rag_ranker_compute_scores_seconds",
-        ):
-            record_counter("rag_ranker_compute_scores_requests_total")
-            sentence_pairs = [[query, passage] for passage in passages]
-            try:
-                with self._lock:
-                    model = self._get_model()
-                    scores = model.compute_score(sentence_pairs)
-            except Exception as exc:  # pragma: no cover - external model failure
-                raise ServiceError(f"BCE ranker 评分失败: {exc}") from exc
-            return [float(score) for score in scores]
-
-    def rank(self, query: str, passages: list[str]) -> list[str]:
-        if not passages:
-            return []
-        with trace_operation(
-            "ranker.rank",
-            attributes={"component": "ranker", "passage.count": len(passages)},
-            metric_name="rag_ranker_rank_seconds",
-        ):
-            record_counter("rag_ranker_rank_requests_total")
-            try:
-                with self._lock:
-                    model = self._get_model()
-                    results = model.rerank(query, passages)
-            except Exception as exc:  # pragma: no cover - external model failure
-                raise ServiceError(f"BCE ranker 排序失败: {exc}") from exc
-
-            if isinstance(results, list):
-                ordered_passages: list[str] = []
-                for item in results:
-                    if isinstance(item, dict):
-                        passage = item.get("text") or item.get("passage") or item.get("content")
-                        if passage is not None:
-                            ordered_passages.append(str(passage))
-                            continue
-                    ordered_passages.append(str(item))
-                return ordered_passages
-            return [str(item) for item in results]
+class GrpcRerankerClient:
+    host: str
+    port: int
+    auth_token: str
+    timeout_seconds: float = 10.0
+    _channel: grpc.Channel | None = field(default=None, init=False, repr=False)
+    _stub: reranker_pb2_grpc.RerankerServiceStub | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def rank_docs(self, query: str, docs: list[RetrievedDoc]) -> list[RetrievedDoc]:
         if not docs:
             return []
-        with trace_operation(
-            "ranker.rank_docs",
-            attributes={"component": "ranker", "doc.count": len(docs)},
-            metric_name="rag_ranker_rank_docs_seconds",
-        ):
-            record_counter("rag_ranker_rank_docs_requests_total")
-            passages = [_doc_to_passage(doc) for doc in docs]
-            scores = self.compute_scores(query, passages)
-            scored_docs = list(enumerate(zip(docs, scores)))
-            scored_docs.sort(key=lambda item: (item[1][1], -item[0]), reverse=True)
-            return [doc for _, (doc, _) in scored_docs]
 
-    def _get_model(self) -> Any:
-        if self._model is not None:
-            return self._model
-
+        request = reranker_pb2.RerankRequest(
+            request_id=str(uuid4()),
+            query=query,
+            documents=[
+                reranker_pb2.RerankDocument(
+                    index=index,
+                    document_id=str(doc.id),
+                    text=_doc_to_passage(doc),
+                )
+                for index, doc in enumerate(docs)
+            ],
+        )
         try:
-            from BCEmbedding import RerankerModel
-        except ImportError as exc:  # pragma: no cover - dependency missing
-            raise ConfigurationError(
-                "BCEmbedding 未安装，无法启用 ranker。请先安装 BCEmbedding。"
-            ) from exc
+            response = self._get_stub().Rerank(
+                request,
+                metadata=self._metadata(),
+                timeout=self.timeout_seconds,
+            )
+        except grpc.RpcError as exc:
+            detail = exc.details() if hasattr(exc, "details") else str(exc)
+            raise ServiceError(f"reranker gRPC request failed: {detail}") from exc
+        except Exception as exc:  # pragma: no cover - defensive transport wrapper
+            raise ServiceError(f"reranker gRPC request failed: {exc}") from exc
 
-        self._model = RerankerModel(model_name_or_path=self.model_name_or_path)
-        return self._model
+        return _apply_ranked_indexes(docs, [item.index for item in response.results])
+
+    def health(self) -> reranker_pb2.HealthResponse:
+        try:
+            return self._get_stub().Health(
+                reranker_pb2.HealthRequest(),
+                timeout=self.timeout_seconds,
+            )
+        except grpc.RpcError as exc:
+            detail = exc.details() if hasattr(exc, "details") else str(exc)
+            raise ServiceError(f"reranker health check failed: {detail}") from exc
+
+    def close(self) -> None:
+        if self._channel is not None:
+            self._channel.close()
+            self._channel = None
+            self._stub = None
+
+    def _get_stub(self) -> reranker_pb2_grpc.RerankerServiceStub:
+        if self._stub is None:
+            target = f"{self.host}:{self.port}"
+            self._channel = grpc.insecure_channel(target)
+            self._stub = reranker_pb2_grpc.RerankerServiceStub(self._channel)
+        return self._stub
+
+    def _metadata(self) -> tuple[tuple[str, str], ...]:
+        return (("authorization", f"Bearer {self.auth_token.strip()}"),)
+
+
+def build_reranker_client(settings) -> GrpcRerankerClient | None:
+    if not settings.reranker_enabled:
+        return None
+    return GrpcRerankerClient(
+        host=settings.reranker_host,
+        port=settings.reranker_port,
+        auth_token=settings.reranker_auth_token or "",
+        timeout_seconds=settings.reranker_timeout_seconds,
+    )
+
+
+def _apply_ranked_indexes(docs: list[RetrievedDoc], ranked_indexes: list[int]) -> list[RetrievedDoc]:
+    docs_by_index = {index: doc for index, doc in enumerate(docs)}
+    ordered_docs: list[RetrievedDoc] = []
+    seen: set[int] = set()
+
+    for index in ranked_indexes:
+        if index in seen:
+            continue
+        doc = docs_by_index.get(index)
+        if doc is None:
+            continue
+        ordered_docs.append(doc)
+        seen.add(index)
+
+    for index, doc in enumerate(docs):
+        if index not in seen:
+            ordered_docs.append(doc)
+    return ordered_docs
 
 
 def _doc_to_passage(doc: RetrievedDoc) -> str:

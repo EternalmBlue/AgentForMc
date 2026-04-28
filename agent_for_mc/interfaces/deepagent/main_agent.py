@@ -7,7 +7,7 @@ from deepagents import create_deep_agent
 from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import trace_operation
-from agent_for_mc.infrastructure.ranker import BceRanker
+from agent_for_mc.infrastructure.ranker import Ranker
 from agent_for_mc.interfaces.deepagent.factory import (
     build_chat_model,
     configure_deepagent_dependencies,
@@ -43,7 +43,7 @@ def build_deep_agent(
     *,
     settings: Settings,
     retriever: Retriever,
-    ranker: BceRanker | None = None,
+    ranker: Ranker | None = None,
     plugin_semantic_service: PluginSemanticAgentService | None = None,
 ) -> object | None:
     if not settings.deepseek_api_key:

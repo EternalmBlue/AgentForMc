@@ -160,6 +160,10 @@ class Settings:
     embedding_api_key_env: str = "RAG_ZHIPU_API_KEY"
     embedding_url: str = "https://open.bigmodel.cn/api/paas/v4/embeddings"
     embedding_model: str = "embedding-3"
+    reranker_host: str = "127.0.0.1"
+    reranker_port: int = 50052
+    reranker_timeout_seconds: float = 10.0
+    reranker_auth_token: str | None = None
 
     @property
     def deepseek_api_base(self) -> str:
@@ -286,6 +290,18 @@ class Settings:
                 )
                 or "maidalun1020/bce-reranker-base_v1"
             ),
+            reranker_host=str(
+                _config_value(config, "reranker", "host", "127.0.0.1")
+            )
+            or "127.0.0.1",
+            reranker_port=int(
+                str(_config_value(config, "reranker", "port", 50052)) or "50052"
+            ),
+            reranker_timeout_seconds=float(
+                str(_config_value(config, "reranker", "timeout_seconds", 10.0))
+                or "10.0"
+            ),
+            reranker_auth_token=_get_env("RAG_RERANKER_GRPC_AUTH_TOKEN"),
             plugin_config_agent_model=str(
                 _config_value(config, "plugin_config_agent", "model", "deepseek-chat")
                 or "deepseek-chat"

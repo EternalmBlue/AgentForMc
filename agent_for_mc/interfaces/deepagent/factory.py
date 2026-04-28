@@ -8,7 +8,7 @@ from agent_for_mc.application.retrieval import Retriever
 from agent_for_mc.infrastructure.clients import DeepSeekChatClient, build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import configure_observability
-from agent_for_mc.infrastructure.ranker import BceRanker
+from agent_for_mc.infrastructure.ranker import Ranker
 from agent_for_mc.infrastructure.semantic_memory_vector_store import (
     LanceSemanticMemoryVectorStore,
 )
@@ -66,7 +66,7 @@ def configure_deepagent_dependencies(
     *,
     settings: Settings,
     retriever: Retriever,
-    ranker: BceRanker | None = None,
+    ranker: Ranker | None = None,
     plugin_semantic_service: PluginSemanticAgentService | None = None,
 ) -> None:
     configure_observability()

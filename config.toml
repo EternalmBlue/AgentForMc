@@ -14,7 +14,10 @@
 # - Embedding 维度由 embedding.dimensions 决定
 
 [reranker]
-enabled = true
+enabled = false
+host = "127.0.0.1"
+port = 50052
+timeout_seconds = 10
 
 # 只有确实需要覆盖默认值时，才添加下面这些配置段。
 #
