@@ -6,11 +6,11 @@ AgentForMc 是 Agent4Minecraft 项目的 AI 后端。它通过 gRPC 接收 Minec
 
 ## 关联仓库
 
-| 仓库 | 职责 | 地址 |
-| --- | --- | --- |
-| AgentForMc | AI 后端，负责 gRPC 服务、RAG、DeepAgent、语义记忆和配置摄取 | <https://github.com/EternalmBlue/AgentForMc> |
+| 仓库 | 职责 | 地址                                               |
+| --- | --- |--------------------------------------------------|
+| AgentForMc | AI 后端，负责 gRPC 服务、RAG、DeepAgent、语义记忆和配置摄取 |                                                  |
 | Agent4Minecraft | Minecraft 插件端，负责游戏内命令、配置扫描、脱敏和文件上传 | <https://github.com/EternalmBlue/Agent4Minecraft> |
-| AgentForMc-Reranker | 可选 reranker 中间件，单独承载 BCE 模型和重排 gRPC 服务 | 本地目录 `F:\AgentForMc-Reranker` |
+| AgentForMc-Reranker | 可选 reranker 中间件，单独承载 BCE 模型和重排 gRPC 服务 | <https://github.com/EternalmBlue/AgentForMc-Reranker> |
 
 两个仓库通过同一份 gRPC 协议对接：
 
@@ -92,8 +92,8 @@ flowchart LR
 ### 1. 克隆仓库
 
 ```powershell
-git clone https://github.com/EternalmBlue/AgentForMc.git
 git clone https://github.com/EternalmBlue/Agent4Minecraft.git
+git clone https://github.com/EternalmBlue/AgentForMc-Reranker.git
 ```
 
 建议先把后端和 Minecraft 服务端部署在同一台机器上，使用默认的 `127.0.0.1:50051` 完成本地联调。
@@ -194,7 +194,7 @@ python -m agent_for_mc.interfaces.grpc
 如果需要 reranker，先启动独立中间件，再启动本后端：
 
 ```powershell
-cd F:\AgentForMc-Reranker
+cd AgentForMc-Reranker
 $env:RAG_RERANKER_GRPC_AUTH_TOKEN="change_me_to_a_strong_token"
 python main.py
 ```
