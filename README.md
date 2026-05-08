@@ -45,7 +45,7 @@ flowchart LR
     Session --> DeepAgent["DeepAgent 工具编排"]
     DeepAgent --> Docs["插件文档检索"]
     DeepAgent --> ConfigMemory["服务器配置语义记忆"]
-    DeepAgent --> LLM["DeepSeek Chat"]
+    DeepAgent --> LLM["LLM Chat (OpenAI-compatible, default DeepSeek)"]
     Docs --> LanceDocs["data/plugin_docs_vector_db"]
     Docs -. optional gRPC .-> Reranker["AgentForMc-Reranker"]
     ConfigMemory --> LanceConfig["data/server_config_semantic_vector_db"]
@@ -70,7 +70,7 @@ flowchart LR
 ## 环境要求
 
 - Python 3.11+ 推荐
-- 可访问 DeepSeek Chat API
+- 可访问 OpenAI-compatible LLM Chat API（默认 DeepSeek）
 - 可访问智谱 OpenAI-compatible embedding API
 - 已准备好的插件文档 LanceDB 向量库
 - 与插件端一致的 gRPC token
@@ -81,7 +81,7 @@ flowchart LR
 - `lancedb`
 - `pyarrow`
 - `langchain-core`
-- `langchain-deepseek`
+- `langchain-openai`
 - `deepagents`
 - `requests`
 - `langsmith`
@@ -136,10 +136,12 @@ cp .env.example .env
 
 ```dotenv
 RAG_ZHIPU_API_KEY=你的智谱APIKey
-RAG_DEEPSEEK_API_KEY=你的DeepSeekAPIKey
+RAG_LLM_API_KEY=你的LLM APIKey
 RAG_GRPC_AUTH_TOKEN=change_me_to_a_strong_token
 RAG_RERANKER_GRPC_AUTH_TOKEN= # 仅启用远程 reranker 时需要
 ```
+
+旧部署里的 `RAG_DEEPSEEK_API_KEY` 和 `DEEPSEEK_API_KEY` 仍会被读取；新部署建议统一使用 `RAG_LLM_API_KEY`。
 
 `RAG_GRPC_AUTH_TOKEN` 必须和插件端 `plugins/Agent4Minecraft/config.yml` 中的 `backend.authToken` 一致。
 
@@ -255,8 +257,9 @@ backend:
 
 | 变量 | 必需 | 说明 |
 | --- | --- | --- |
-| `RAG_ZHIPU_API_KEY` | 是 | 智谱 embedding API Key |
-| `RAG_DEEPSEEK_API_KEY` | 是 | DeepSeek Chat API Key |
+| `RAG_ZHIPU_API_KEY` | 是 | 智谱 embedding API Key；启用 `web_research` 时也复用它调用智谱 Web Search |
+| `RAG_LLM_API_KEY` | 是 | LLM Chat API Key，默认请求 DeepSeek 的 OpenAI-compatible 接口 |
+| `RAG_DEEPSEEK_API_KEY` | 否 | 旧版本兼容别名；未设置 `RAG_LLM_API_KEY` 时读取 |
 | `RAG_GRPC_AUTH_TOKEN` | 是 | 插件调用 gRPC 业务接口的 Bearer token |
 | `RAG_RERANKER_GRPC_AUTH_TOKEN` | 启用 reranker 时是 | 后端调用 AgentForMc-Reranker 的 Bearer token |
 | `RAG_CONFIG_TOML` | 否 | 覆盖默认 `config.toml` 路径 |
@@ -281,9 +284,20 @@ url = "https://open.bigmodel.cn/api/paas/v4/embeddings"
 model = "embedding-3"
 dimensions = 1024
 
-[deepseek]
+[web_research]
+enabled = false
+provider = "zhipu"
+url = "https://open.bigmodel.cn/api/paas/v4/web_search"
+search_engine = "search_std"
+top_k = 5
+content_size = "medium"
+search_intent = false
+search_recency_filter = "noLimit"
+search_domain_filter = ""
+
+[llm]
 model = "deepseek-chat"
-chat_url = "https://api.deepseek.com/chat/completions"
+base_url = "https://api.deepseek.com"
 
 [paths]
 plugin_docs_vector_db_dir = "data/plugin_docs_vector_db"
@@ -478,7 +492,7 @@ pytest tests/test_observability.py
 - session ask
 - retrieval
 - embedding
-- DeepSeek chat
+- LLM chat
 - plugin semantic refresh
 - tool 调用
 
@@ -505,13 +519,15 @@ otel_enabled = true
 
 ## 常见问题
 
-### 启动时报 Missing environment variable RAG_DEEPSEEK_API_KEY
+### 启动时报 Missing LLM API key
 
-后端没有读取到 DeepSeek API Key。确认 `.env` 存在，且包含：
+后端没有读取到 LLM API Key。确认 `.env` 存在，且包含：
 
 ```dotenv
-RAG_DEEPSEEK_API_KEY=...
+RAG_LLM_API_KEY=...
 ```
+
+兼容旧部署时也可以继续使用 `RAG_DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY`。
 
 ### 启动时报 Missing embedding API key
 
@@ -547,7 +563,7 @@ data/server_instance_bindings.json
 
 ### `/a4m sync` 后状态一直是 indexing
 
-后端正在执行配置语义刷新。可以继续用 `/a4m status` 查看 `current_refresh_bundle` 和 `current_refresh_phase`。如果长期卡住，检查后端日志中的 DeepSeek、embedding 或 LanceDB 错误。
+后端正在执行配置语义刷新。可以继续用 `/a4m status` 查看 `current_refresh_bundle` 和 `current_refresh_phase`。如果长期卡住，检查后端日志中的 LLM、embedding 或 LanceDB 错误。
 
 ### 修改 proto 后插件无法连接
 

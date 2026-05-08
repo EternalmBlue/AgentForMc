@@ -69,6 +69,36 @@ class AgentBridgeServiceStub(object):
                 request_serializer=agent__bridge__pb2.SyncStatusRequest.SerializeToString,
                 response_deserializer=agent__bridge__pb2.SyncStatusResponse.FromString,
                 _registered_method=True)
+        self.StartSkillCreation = channel.unary_unary(
+                '/agentbridge.v1.AgentBridgeService/StartSkillCreation',
+                request_serializer=agent__bridge__pb2.StartSkillCreationRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.SkillCreationResponse.FromString,
+                _registered_method=True)
+        self.ContinueSkillCreation = channel.unary_unary(
+                '/agentbridge.v1.AgentBridgeService/ContinueSkillCreation',
+                request_serializer=agent__bridge__pb2.ContinueSkillCreationRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.SkillCreationResponse.FromString,
+                _registered_method=True)
+        self.ConfirmSkillCreation = channel.unary_unary(
+                '/agentbridge.v1.AgentBridgeService/ConfirmSkillCreation',
+                request_serializer=agent__bridge__pb2.ConfirmSkillCreationRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.SkillCreationResponse.FromString,
+                _registered_method=True)
+        self.ListSkills = channel.unary_unary(
+                '/agentbridge.v1.AgentBridgeService/ListSkills',
+                request_serializer=agent__bridge__pb2.ListSkillsRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.ListSkillsResponse.FromString,
+                _registered_method=True)
+        self.GetSkill = channel.unary_unary(
+                '/agentbridge.v1.AgentBridgeService/GetSkill',
+                request_serializer=agent__bridge__pb2.GetSkillRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.GetSkillResponse.FromString,
+                _registered_method=True)
+        self.DeleteSkill = channel.unary_unary(
+                '/agentbridge.v1.AgentBridgeService/DeleteSkill',
+                request_serializer=agent__bridge__pb2.DeleteSkillRequest.SerializeToString,
+                response_deserializer=agent__bridge__pb2.DeleteSkillResponse.FromString,
+                _registered_method=True)
 
 
 class AgentBridgeServiceServicer(object):
@@ -116,6 +146,42 @@ class AgentBridgeServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def StartSkillCreation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ContinueSkillCreation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ConfirmSkillCreation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListSkills(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetSkill(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteSkill(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AgentBridgeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -153,6 +219,36 @@ def add_AgentBridgeServiceServicer_to_server(servicer, server):
                     servicer.GetSyncStatus,
                     request_deserializer=agent__bridge__pb2.SyncStatusRequest.FromString,
                     response_serializer=agent__bridge__pb2.SyncStatusResponse.SerializeToString,
+            ),
+            'StartSkillCreation': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartSkillCreation,
+                    request_deserializer=agent__bridge__pb2.StartSkillCreationRequest.FromString,
+                    response_serializer=agent__bridge__pb2.SkillCreationResponse.SerializeToString,
+            ),
+            'ContinueSkillCreation': grpc.unary_unary_rpc_method_handler(
+                    servicer.ContinueSkillCreation,
+                    request_deserializer=agent__bridge__pb2.ContinueSkillCreationRequest.FromString,
+                    response_serializer=agent__bridge__pb2.SkillCreationResponse.SerializeToString,
+            ),
+            'ConfirmSkillCreation': grpc.unary_unary_rpc_method_handler(
+                    servicer.ConfirmSkillCreation,
+                    request_deserializer=agent__bridge__pb2.ConfirmSkillCreationRequest.FromString,
+                    response_serializer=agent__bridge__pb2.SkillCreationResponse.SerializeToString,
+            ),
+            'ListSkills': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListSkills,
+                    request_deserializer=agent__bridge__pb2.ListSkillsRequest.FromString,
+                    response_serializer=agent__bridge__pb2.ListSkillsResponse.SerializeToString,
+            ),
+            'GetSkill': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSkill,
+                    request_deserializer=agent__bridge__pb2.GetSkillRequest.FromString,
+                    response_serializer=agent__bridge__pb2.GetSkillResponse.SerializeToString,
+            ),
+            'DeleteSkill': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteSkill,
+                    request_deserializer=agent__bridge__pb2.DeleteSkillRequest.FromString,
+                    response_serializer=agent__bridge__pb2.DeleteSkillResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -344,6 +440,168 @@ class AgentBridgeService(object):
             '/agentbridge.v1.AgentBridgeService/GetSyncStatus',
             agent__bridge__pb2.SyncStatusRequest.SerializeToString,
             agent__bridge__pb2.SyncStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartSkillCreation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/StartSkillCreation',
+            agent__bridge__pb2.StartSkillCreationRequest.SerializeToString,
+            agent__bridge__pb2.SkillCreationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ContinueSkillCreation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/ContinueSkillCreation',
+            agent__bridge__pb2.ContinueSkillCreationRequest.SerializeToString,
+            agent__bridge__pb2.SkillCreationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ConfirmSkillCreation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/ConfirmSkillCreation',
+            agent__bridge__pb2.ConfirmSkillCreationRequest.SerializeToString,
+            agent__bridge__pb2.SkillCreationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListSkills(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/ListSkills',
+            agent__bridge__pb2.ListSkillsRequest.SerializeToString,
+            agent__bridge__pb2.ListSkillsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetSkill(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/GetSkill',
+            agent__bridge__pb2.GetSkillRequest.SerializeToString,
+            agent__bridge__pb2.GetSkillResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteSkill(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/agentbridge.v1.AgentBridgeService/DeleteSkill',
+            agent__bridge__pb2.DeleteSkillRequest.SerializeToString,
+            agent__bridge__pb2.DeleteSkillResponse.FromString,
             options,
             channel_credentials,
             insecure,

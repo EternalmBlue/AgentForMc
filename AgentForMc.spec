@@ -14,6 +14,7 @@ datas = [
         str(ROOT / "packaging" / "pyinstaller" / "empty_data_marker.txt"),
         "data",
     ),
+    (str(ROOT / "agent_for_mc" / "skills"), "agent_for_mc/skills"),
 ]
 binaries = []
 hiddenimports = []
@@ -46,7 +47,6 @@ for package_name in [
     "deepagents",
     "langchain",
     "langchain_core",
-    "langchain_deepseek",
     "langchain_openai",
     "langgraph",
     "langsmith",
@@ -62,7 +62,6 @@ for distribution_name in [
     "deepagents",
     "langchain",
     "langchain-core",
-    "langchain-deepseek",
     "langchain-openai",
     "langgraph",
     "langsmith",

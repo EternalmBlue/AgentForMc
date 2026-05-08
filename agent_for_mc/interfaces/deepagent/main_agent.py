@@ -46,7 +46,7 @@ def build_deep_agent(
     ranker: Ranker | None = None,
     plugin_semantic_service: PluginSemanticAgentService | None = None,
 ) -> object | None:
-    if not settings.deepseek_api_key:
+    if not settings.llm_api_key:
         return None
 
     with trace_operation("build_deep_agent", attributes={"component": "deepagent"}):
@@ -58,7 +58,7 @@ def build_deep_agent(
         )
         model = build_chat_model(
             settings=settings,
-            model_name=settings.deepseek_model,
+            model_name=settings.llm_model,
         )
         plugin_config_agent = build_plugin_config_subagent(settings=settings)
         tools = [

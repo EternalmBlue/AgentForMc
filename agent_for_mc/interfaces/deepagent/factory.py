@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from langchain_deepseek import ChatDeepSeek
+from langchain_openai import ChatOpenAI
 
 from agent_for_mc.application.retrieval import Retriever
-from agent_for_mc.infrastructure.clients import DeepSeekChatClient, build_embedding_client
+from agent_for_mc.infrastructure.clients import OpenAICompatibleChatClient, build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import configure_observability
 from agent_for_mc.infrastructure.ranker import Ranker
@@ -52,11 +52,11 @@ if TYPE_CHECKING:
     from agent_for_mc.application.plugin_semantic_agent import PluginSemanticAgentService
 
 
-def build_chat_model(*, settings: Settings, model_name: str) -> ChatDeepSeek:
-    return ChatDeepSeek(
+def build_chat_model(*, settings: Settings, model_name: str) -> ChatOpenAI:
+    return ChatOpenAI(
         model=model_name,
-        api_key=settings.deepseek_api_key,
-        api_base=settings.deepseek_api_base,
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
         temperature=0.1,
         timeout=settings.request_timeout_seconds,
     )
@@ -71,7 +71,7 @@ def configure_deepagent_dependencies(
 ) -> None:
     configure_observability()
 
-    planning_client = DeepSeekChatClient(settings)
+    planning_client = OpenAICompatibleChatClient(settings)
     embedding_client = build_embedding_client(settings)
 
     configure_select_retrieval_tool(

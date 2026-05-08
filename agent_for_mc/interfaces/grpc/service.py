@@ -6,6 +6,12 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import grpc
 
 from . import agent_bridge_pb2, agent_bridge_pb2_grpc
+from agent_for_mc.application.skills import (
+    DeleteSkillResult,
+    SkillCreationResult,
+    SkillRecord,
+    SkillScope,
+)
 from agent_for_mc.interfaces.grpc.runtime import (
     AgentBridgeRuntime,
     AskCommand,
@@ -29,6 +35,7 @@ from agent_for_mc.interfaces.grpc.runtime import (
 BRIDGE_PROTOCOL_VERSION = 1
 BACKEND_NAME = "AgentForMc"
 CAPABILITY_ASK_STREAM_PROGRESS = "ask_stream_progress"
+CAPABILITY_SKILLS_V1 = "skills_v1"
 
 
 class AgentBridgeService(agent_bridge_pb2_grpc.AgentBridgeServiceServicer):
@@ -52,7 +59,7 @@ class AgentBridgeService(agent_bridge_pb2_grpc.AgentBridgeServiceServicer):
             backend_name=BACKEND_NAME,
             backend_version=self._backend_version,
             protocol_version=BRIDGE_PROTOCOL_VERSION,
-            capabilities=[CAPABILITY_ASK_STREAM_PROGRESS],
+            capabilities=[CAPABILITY_ASK_STREAM_PROGRESS, CAPABILITY_SKILLS_V1],
         )
 
     def Ask(self, request, context):
@@ -125,6 +132,89 @@ class AgentBridgeService(agent_bridge_pb2_grpc.AgentBridgeServiceServicer):
             self._abort_from_exception(context, exc)
 
         return _build_sync_status_response(reply)
+
+    def StartSkillCreation(self, request, context):
+        self._require_authorization(context)
+        try:
+            reply = self._runtime.start_skill_creation(
+                server_id=request.server_id,
+                server_instance_id=request.server_instance_id,
+                initial_requirement=request.initial_requirement,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
+
+        return _build_skill_creation_response(reply)
+
+    def ContinueSkillCreation(self, request, context):
+        self._require_authorization(context)
+        try:
+            reply = self._runtime.continue_skill_creation(
+                server_id=request.server_id,
+                server_instance_id=request.server_instance_id,
+                draft_id=request.draft_id,
+                user_message=request.user_message,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
+
+        return _build_skill_creation_response(reply)
+
+    def ConfirmSkillCreation(self, request, context):
+        self._require_authorization(context)
+        try:
+            reply = self._runtime.confirm_skill_creation(
+                server_id=request.server_id,
+                server_instance_id=request.server_instance_id,
+                draft_id=request.draft_id,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
+
+        return _build_skill_creation_response(reply)
+
+    def ListSkills(self, request, context):
+        self._require_authorization(context)
+        try:
+            skills = self._runtime.list_skills(
+                server_id=request.server_id,
+                server_instance_id=request.server_instance_id,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
+
+        return agent_bridge_pb2.ListSkillsResponse(
+            skills=[_build_skill_summary(skill) for skill in skills]
+        )
+
+    def GetSkill(self, request, context):
+        self._require_authorization(context)
+        try:
+            skill = self._runtime.get_skill(
+                server_id=request.server_id,
+                server_instance_id=request.server_instance_id,
+                skill_name=request.skill_name,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
+
+        return agent_bridge_pb2.GetSkillResponse(
+            skill=_build_skill_summary(skill),
+            content=skill.content if skill.valid else "",
+        )
+
+    def DeleteSkill(self, request, context):
+        self._require_authorization(context)
+        try:
+            reply = self._runtime.delete_skill(
+                server_id=request.server_id,
+                server_instance_id=request.server_instance_id,
+                skill_name=request.skill_name,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via gRPC tests
+            self._abort_from_exception(context, exc)
+
+        return _build_delete_skill_response(reply)
 
     def _require_authorization(self, context) -> None:
         metadata = dict(context.invocation_metadata())
@@ -275,6 +365,54 @@ def _build_sync_status_response(reply: SyncStatusSnapshot) -> agent_bridge_pb2.S
         current_refresh_bundle=reply.current_refresh_bundle,
         current_refresh_phase=reply.current_refresh_phase,
     )
+
+
+def _build_skill_creation_response(
+    reply: SkillCreationResult,
+) -> agent_bridge_pb2.SkillCreationResponse:
+    response = agent_bridge_pb2.SkillCreationResponse(
+        draft_id=reply.draft_id,
+        status=reply.status,
+        message=reply.message,
+        questions=list(reply.questions),
+        content=reply.content,
+        diagnostics=list(reply.diagnostics),
+    )
+    if reply.skill is not None:
+        response.skill.CopyFrom(_build_skill_summary(reply.skill))
+    return response
+
+
+def _build_delete_skill_response(
+    reply: DeleteSkillResult,
+) -> agent_bridge_pb2.DeleteSkillResponse:
+    return agent_bridge_pb2.DeleteSkillResponse(
+        deleted=reply.deleted,
+        message=reply.message,
+        archived_path=str(reply.archived_path or ""),
+    )
+
+
+def _build_skill_summary(skill: SkillRecord) -> agent_bridge_pb2.SkillSummary:
+    return agent_bridge_pb2.SkillSummary(
+        scope=_skill_scope_to_proto(skill.scope),
+        name=skill.name,
+        description=skill.description,
+        valid=skill.valid,
+        readonly=skill.readonly,
+        deletable=skill.deletable,
+        diagnostics=list(skill.diagnostics),
+    )
+
+
+def _skill_scope_to_proto(scope: SkillScope) -> agent_bridge_pb2.SkillScope:
+    if scope == SkillScope.OFFICIAL:
+        return agent_bridge_pb2.SKILL_SCOPE_OFFICIAL
+    if scope == SkillScope.GLOBAL:
+        return agent_bridge_pb2.SKILL_SCOPE_GLOBAL
+    if scope == SkillScope.SERVER:
+        return agent_bridge_pb2.SKILL_SCOPE_SERVER
+    return agent_bridge_pb2.SKILL_SCOPE_UNSPECIFIED
 
 
 def _sync_state_to_proto(state: SyncState) -> agent_bridge_pb2.SyncState:

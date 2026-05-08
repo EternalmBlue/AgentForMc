@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from langchain_core.tools import tool
 
 from agent_for_mc.application.deepagent_state import record_standalone_query
-from agent_for_mc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.infrastructure.clients import OpenAICompatibleChatClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
@@ -26,7 +26,7 @@ Rules:
 
 @dataclass(slots=True)
 class QueryRewriteToolContext:
-    client: DeepSeekChatClient
+    client: OpenAICompatibleChatClient
 
 
 _TOOL_CONTEXT = SharedContextSlot[QueryRewriteToolContext](

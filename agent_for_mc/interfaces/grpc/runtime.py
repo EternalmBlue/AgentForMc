@@ -23,8 +23,25 @@ from agent_for_mc.application.plugin_semantic_agent import (
     RefreshProgressSnapshot,
     build_plugin_semantic_service,
 )
+from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.semantic_memory import SemanticMemoryRetriever
+from agent_for_mc.application.skills import (
+    DeleteSkillResult,
+    SkillAuthoringContextBuilder,
+    SkillAuthoringService,
+    SkillConflictError,
+    SkillCreationResult,
+    SkillDraftNotFoundError,
+    SkillError,
+    SkillNotFoundError,
+    SkillReadonlyError,
+    SkillRegistry,
+    SkillValidationError,
+    ZhipuWebResearchProvider,
+)
 from agent_for_mc.domain.errors import RagForMcError
 from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
+from agent_for_mc.infrastructure.clients import OpenAICompatibleChatClient, build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import (
     configure_observability,
@@ -196,6 +213,7 @@ class SessionRegistry:
         memory_scope_id: str,
         question: str,
         *,
+        server_id: str = "",
         server_plugins: list[str] | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
     ) -> AnswerResult:
@@ -204,6 +222,7 @@ class SessionRegistry:
             handle.last_used_epoch_ms = _now_ms()
             return handle.session.ask(
                 question,
+                server_id=server_id,
                 server_plugins=server_plugins,
                 progress_callback=progress_callback,
             )
@@ -348,11 +367,26 @@ class AgentBridgeRuntime:
 
         configure_observability()
         self._settings.plugin_semantic_mc_servers_root.mkdir(parents=True, exist_ok=True)
+        self._settings.global_skills_dir.mkdir(parents=True, exist_ok=True)
         self._settings.grpc_upload_tmp_dir.mkdir(parents=True, exist_ok=True)
 
         self._shared_ranker = build_reranker_client(settings)
 
         self._plugin_semantic_service = build_plugin_semantic_service(settings)
+        self._skill_registry = SkillRegistry(
+            official_skills_dir=settings.official_skills_dir,
+            global_skills_dir=settings.global_skills_dir,
+            mc_servers_root=settings.plugin_semantic_mc_servers_root,
+            max_skill_bytes=settings.skill_max_bytes,
+            selection_top_k=settings.skill_selection_top_k,
+        )
+        skill_authoring_context_builder = self._create_skill_authoring_context_builder()
+        self._skill_authoring_service = SkillAuthoringService(
+            registry=self._skill_registry,
+            client=OpenAICompatibleChatClient(settings),
+            context_builder=skill_authoring_context_builder,
+            ttl_seconds=settings.skill_draft_ttl_seconds,
+        )
         self._session_registry = SessionRegistry(
             factory=self._create_session,
             ttl_seconds=settings.grpc_session_ttl_seconds,
@@ -473,6 +507,7 @@ class AgentBridgeRuntime:
             result = self._session_registry.ask(
                 scope_id,
                 question,
+                server_id=server_id,
                 server_plugins=server_plugins,
                 progress_callback=progress_callback,
             )
@@ -486,6 +521,124 @@ class AgentBridgeRuntime:
             citations_summary=_summarize_citations(result.citations),
             backend_trace_id=command.request_id.strip(),
         )
+
+    def list_skills(self, *, server_id: str, server_instance_id: str):
+        normalized_server_id, _ = self._validate_server_identity(
+            server_id=server_id,
+            server_instance_id=server_instance_id,
+        )
+        return self._skill_registry.list_skills(normalized_server_id)
+
+    def get_skill(self, *, server_id: str, server_instance_id: str, skill_name: str):
+        normalized_server_id, _ = self._validate_server_identity(
+            server_id=server_id,
+            server_instance_id=server_instance_id,
+        )
+        try:
+            return self._skill_registry.get_skill(
+                server_id=normalized_server_id,
+                skill_name=skill_name,
+            )
+        except SkillNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except SkillValidationError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+    def delete_skill(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        skill_name: str,
+    ) -> DeleteSkillResult:
+        normalized_server_id, _ = self._validate_server_identity(
+            server_id=server_id,
+            server_instance_id=server_instance_id,
+        )
+        try:
+            return self._skill_registry.delete_server_skill(
+                server_id=normalized_server_id,
+                skill_name=skill_name,
+            )
+        except SkillReadonlyError as exc:
+            raise FailedPreconditionError(str(exc)) from exc
+        except SkillNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except SkillValidationError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+    def start_skill_creation(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        initial_requirement: str,
+    ) -> SkillCreationResult:
+        normalized_server_id, _ = self._validate_server_identity(
+            server_id=server_id,
+            server_instance_id=server_instance_id,
+        )
+        try:
+            return self._skill_authoring_service.start(
+                server_id=normalized_server_id,
+                initial_requirement=initial_requirement,
+            )
+        except SkillValidationError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        except SkillConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+        except SkillError as exc:
+            raise BridgeRuntimeError(str(exc)) from exc
+
+    def continue_skill_creation(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        draft_id: str,
+        user_message: str,
+    ) -> SkillCreationResult:
+        normalized_server_id, _ = self._validate_server_identity(
+            server_id=server_id,
+            server_instance_id=server_instance_id,
+        )
+        try:
+            return self._skill_authoring_service.continue_draft(
+                server_id=normalized_server_id,
+                draft_id=draft_id,
+                user_message=user_message,
+            )
+        except SkillDraftNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except SkillValidationError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        except SkillError as exc:
+            raise BridgeRuntimeError(str(exc)) from exc
+
+    def confirm_skill_creation(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        draft_id: str,
+    ) -> SkillCreationResult:
+        normalized_server_id, _ = self._validate_server_identity(
+            server_id=server_id,
+            server_instance_id=server_instance_id,
+        )
+        try:
+            return self._skill_authoring_service.confirm(
+                server_id=normalized_server_id,
+                draft_id=draft_id,
+            )
+        except SkillDraftNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except SkillConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+        except SkillValidationError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        except SkillError as exc:
+            raise BridgeRuntimeError(str(exc)) from exc
 
     def prepare_sync(
         self,
@@ -812,8 +965,69 @@ class AgentBridgeRuntime:
             memory_scope_id=memory_scope_id,
             ranker=self._shared_ranker,
             plugin_semantic_service=self._plugin_semantic_service,
+            skill_registry=self._skill_registry,
             attach_plugin_semantic_service_to_session=False,
             configure_runtime_observability=False,
+        )
+
+    def _create_skill_authoring_context_builder(self) -> SkillAuthoringContextBuilder:
+        embedding_client = build_embedding_client(self._settings)
+        plugin_docs_retriever = Retriever(
+            LancePluginVectorStore(
+                self._settings.plugin_docs_vector_db_dir,
+                self._settings.plugin_docs_table_name,
+                expected_embedding_dimension=self._settings.expected_embedding_dimension,
+            ),
+            embedding_client,
+            ranker=self._shared_ranker,
+            bm25_enabled=self._settings.plugin_docs_bm25_enabled,
+            bm25_top_k=self._settings.plugin_docs_bm25_top_k,
+            bm25_auto_create_index=self._settings.plugin_docs_bm25_auto_create_index,
+        )
+        semantic_store = getattr(self._plugin_semantic_service, "store", None)
+        semantic_embedding_client = getattr(
+            self._plugin_semantic_service,
+            "embedding_client",
+            None,
+        )
+        server_config_retriever = None
+        if semantic_store is not None and semantic_embedding_client is not None:
+            server_config_retriever = SemanticMemoryRetriever(
+                semantic_store,
+                semantic_embedding_client,
+            )
+        web_research_provider = self._create_web_research_provider()
+        return SkillAuthoringContextBuilder(
+            skill_inventory=self._skill_registry,
+            plugin_docs_retriever=plugin_docs_retriever,
+            server_config_retriever=server_config_retriever,
+            web_research_provider=web_research_provider,
+            plugin_docs_top_k=max(1, self._settings.retrieval_top_k),
+            server_config_top_k=max(1, self._settings.server_config_semantic_top_k),
+            web_research_top_k=max(1, self._settings.web_research_top_k),
+            preview_chars=max(
+                120,
+                min(1000, self._settings.server_config_semantic_preview_chars),
+            ),
+        )
+
+    def _create_web_research_provider(self) -> ZhipuWebResearchProvider | None:
+        if not self._settings.web_research_enabled:
+            return None
+        if self._settings.web_research_provider.strip().casefold() != "zhipu":
+            return None
+        api_key = self._settings.resolved_web_research_api_key
+        if not api_key:
+            return None
+        return ZhipuWebResearchProvider(
+            api_key=api_key,
+            url=self._settings.web_research_url,
+            search_engine=self._settings.web_research_search_engine,
+            content_size=self._settings.web_research_content_size,
+            search_intent=self._settings.web_research_search_intent,
+            search_recency_filter=self._settings.web_research_recency_filter,
+            search_domain_filter=self._settings.web_research_domain_filter,
+            timeout_seconds=self._settings.request_timeout_seconds,
         )
 
     def _matches_existing_file(self, server_id: str, entry: ManifestEntry) -> bool:

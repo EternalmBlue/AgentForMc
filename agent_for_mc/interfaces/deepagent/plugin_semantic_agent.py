@@ -10,7 +10,7 @@ from agent_for_mc.interfaces.deepagent.prompts import PLUGIN_SEMANTIC_AGENT_SYST
 
 def build_plugin_semantic_agent(*, settings: Settings) -> object | None:
     configure_observability()
-    if not settings.deepseek_api_key:
+    if not settings.llm_api_key:
         return None
 
     with trace_operation(

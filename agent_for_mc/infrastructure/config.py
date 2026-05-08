@@ -7,6 +7,7 @@ from typing import Any
 
 from agent_for_mc.infrastructure.dotenv import load_dotenv
 from agent_for_mc.infrastructure.runtime_paths import (
+    bundled_resource_path,
     default_config_path,
     ensure_external_runtime_layout,
     resolve_runtime_path,
@@ -116,9 +117,9 @@ def load_runtime_config_source() -> RuntimeConfigSource:
 class Settings:
     plugin_docs_vector_db_dir: Path
     plugin_docs_table_name: str
-    deepseek_api_key: str | None
-    deepseek_model: str
-    deepseek_chat_url: str
+    llm_api_key: str | None
+    llm_model: str
+    llm_base_url: str
     expected_embedding_dimension: int
     rewrite_history_turns: int
     retrieval_top_k: int
@@ -164,12 +165,27 @@ class Settings:
     reranker_port: int = 50052
     reranker_timeout_seconds: float = 10.0
     reranker_auth_token: str | None = None
+    official_skills_dir: Path = BASE_DIR / "agent_for_mc" / "skills"
+    global_skills_dir: Path = BASE_DIR / "skills"
+    skill_max_bytes: int = 32768
+    skill_selection_top_k: int = 3
+    skill_draft_ttl_seconds: int = 1800
+    web_research_enabled: bool = False
+    web_research_provider: str = "zhipu"
+    web_research_url: str = "https://open.bigmodel.cn/api/paas/v4/web_search"
+    web_research_search_engine: str = "search_std"
+    web_research_top_k: int = 5
+    web_research_content_size: str = "medium"
+    web_research_search_intent: bool = False
+    web_research_recency_filter: str = "noLimit"
+    web_research_domain_filter: str = ""
 
     @property
-    def deepseek_api_base(self) -> str:
-        if self.deepseek_chat_url.endswith("/chat/completions"):
-            return self.deepseek_chat_url[: -len("/chat/completions")] + "/v1"
-        return self.deepseek_chat_url.rstrip("/")
+    def llm_chat_url(self) -> str:
+        base = self.llm_base_url.rstrip("/")
+        if base.endswith("/v1"):
+            return base[: -len("/v1")] + "/v1/chat/completions"
+        return base + "/v1/chat/completions"
 
     @property
     def resolved_embedding_api_key_env(self) -> str:
@@ -196,6 +212,10 @@ class Settings:
     @property
     def resolved_embedding_dimensions(self) -> int:
         return self.expected_embedding_dimension
+
+    @property
+    def resolved_web_research_api_key(self) -> str | None:
+        return self.resolved_embedding_api_key
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -225,18 +245,20 @@ class Settings:
                 _config_value(config, "plugin_docs_store", "table_name", "plugin_docs")
             )
             or "plugin_docs",
-            deepseek_api_key=_get_env("RAG_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
-            deepseek_model=str(_config_value(config, "deepseek", "model", "deepseek-chat"))
+            llm_api_key=_get_env("RAG_LLM_API_KEY", "RAG_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
+            llm_model=str(
+                _config_value(config, "llm", "model", "deepseek-chat")
+            )
             or "deepseek-chat",
-            deepseek_chat_url=str(
+            llm_base_url=str(
                 _config_value(
                     config,
-                    "deepseek",
-                    "chat_url",
-                    "https://api.deepseek.com/chat/completions",
+                    "llm",
+                    "base_url",
+                    "https://api.deepseek.com",
                 )
             )
-            or "https://api.deepseek.com/chat/completions",
+            or "https://api.deepseek.com",
             expected_embedding_dimension=int(
                 str(_config_value(config, "embedding", "dimensions", 1024))
                 or "1024"
@@ -303,12 +325,12 @@ class Settings:
             ),
             reranker_auth_token=_get_env("RAG_RERANKER_GRPC_AUTH_TOKEN"),
             plugin_config_agent_model=str(
-                _config_value(config, "plugin_config_agent", "model", "deepseek-chat")
-                or "deepseek-chat"
+                _config_value(config, "plugin_config_agent", "model", "")
+                or _config_value(config, "llm", "model", "deepseek-chat")
             ),
             memory_maintenance_agent_model=str(
-                _config_value(config, "memory_maintenance_agent", "model", "deepseek-chat")
-                or "deepseek-chat"
+                _config_value(config, "memory_maintenance_agent", "model", "")
+                or _config_value(config, "llm", "model", "deepseek-chat")
             ),
             memory_enabled=_parse_bool(
                 _config_value(config, "memory", "enabled", False),
@@ -351,8 +373,8 @@ class Settings:
                 base_dir=config_base_dir,
             ),
             plugin_semantic_agent_model=str(
-                _config_value(config, "plugin_semantic_agent", "model", "deepseek-chat")
-                or "deepseek-chat"
+                _config_value(config, "plugin_semantic_agent", "model", "")
+                or _config_value(config, "llm", "model", "deepseek-chat")
             ),
             plugin_semantic_agent_scan_on_startup=_parse_bool(
                 _config_value(config, "plugin_semantic_agent", "scan_on_startup", True),
@@ -470,4 +492,71 @@ class Settings:
                 )
             ).strip()
             or "embedding-3",
+            official_skills_dir=(
+                _resolve_path(
+                    str(_config_value(config, "skills", "official_dir", "")),
+                    base_dir=config_base_dir,
+                )
+                if _config_value(config, "skills", "official_dir", "")
+                else bundled_resource_path("agent_for_mc/skills")
+            ),
+            global_skills_dir=_resolve_path(
+                str(_config_value(config, "skills", "global_dir", "skills"))
+                or "skills",
+                base_dir=config_base_dir,
+            ),
+            skill_max_bytes=int(
+                str(_config_value(config, "skills", "max_bytes", 32768)) or "32768"
+            ),
+            skill_selection_top_k=int(
+                str(_config_value(config, "skills", "selection_top_k", 3)) or "3"
+            ),
+            skill_draft_ttl_seconds=int(
+                str(_config_value(config, "skills", "draft_ttl_seconds", 1800))
+                or "1800"
+            ),
+            web_research_enabled=_parse_bool(
+                _config_value(config, "web_research", "enabled", False),
+                default=False,
+            ),
+            web_research_provider=str(
+                _config_value(config, "web_research", "provider", "zhipu")
+            ).strip()
+            or "zhipu",
+            web_research_url=str(
+                _config_value(
+                    config,
+                    "web_research",
+                    "url",
+                    "https://open.bigmodel.cn/api/paas/v4/web_search",
+                )
+            ).strip()
+            or "https://open.bigmodel.cn/api/paas/v4/web_search",
+            web_research_search_engine=str(
+                _config_value(config, "web_research", "search_engine", "search_std")
+            ).strip()
+            or "search_std",
+            web_research_top_k=int(
+                str(_config_value(config, "web_research", "top_k", 5)) or "5"
+            ),
+            web_research_content_size=str(
+                _config_value(config, "web_research", "content_size", "medium")
+            ).strip()
+            or "medium",
+            web_research_search_intent=_parse_bool(
+                _config_value(config, "web_research", "search_intent", False),
+                default=False,
+            ),
+            web_research_recency_filter=str(
+                _config_value(
+                    config,
+                    "web_research",
+                    "search_recency_filter",
+                    "noLimit",
+                )
+            ).strip()
+            or "noLimit",
+            web_research_domain_filter=str(
+                _config_value(config, "web_research", "search_domain_filter", "")
+            ).strip(),
         )

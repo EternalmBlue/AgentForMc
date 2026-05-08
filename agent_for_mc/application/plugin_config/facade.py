@@ -9,7 +9,7 @@ from agent_for_mc.application.semantic_memory import (
     format_semantic_memory_docs,
 )
 from agent_for_mc.domain.models import SemanticMemoryDoc
-from agent_for_mc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.infrastructure.clients import OpenAICompatibleChatClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 
@@ -17,7 +17,7 @@ from agent_for_mc.infrastructure.shared_context import SharedContextSlot
 @dataclass(slots=True)
 class PluginConfigToolContext:
     retriever: SemanticMemoryRetriever
-    summarizer_client: DeepSeekChatClient
+    summarizer_client: OpenAICompatibleChatClient
     top_k: int
     preview_chars: int
     summary_max_chars: int = 500

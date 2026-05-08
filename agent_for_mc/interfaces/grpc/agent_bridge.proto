@@ -10,6 +10,12 @@ service AgentBridgeService {
   rpc UploadFileChunk(stream FileChunkUploadRequest) returns (FileChunkUploadResponse);
   rpc CommitSync(SyncCommitRequest) returns (SyncCommitResponse);
   rpc GetSyncStatus(SyncStatusRequest) returns (SyncStatusResponse);
+  rpc StartSkillCreation(StartSkillCreationRequest) returns (SkillCreationResponse);
+  rpc ContinueSkillCreation(ContinueSkillCreationRequest) returns (SkillCreationResponse);
+  rpc ConfirmSkillCreation(ConfirmSkillCreationRequest) returns (SkillCreationResponse);
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+  rpc GetSkill(GetSkillRequest) returns (GetSkillResponse);
+  rpc DeleteSkill(DeleteSkillRequest) returns (DeleteSkillResponse);
 }
 
 message ProbeRequest {
@@ -156,4 +162,82 @@ message SyncStatusResponse {
   int32 refresh_failed_bundles = 15;
   string current_refresh_bundle = 16;
   string current_refresh_phase = 17;
+}
+
+enum SkillScope {
+  SKILL_SCOPE_UNSPECIFIED = 0;
+  SKILL_SCOPE_OFFICIAL = 1;
+  SKILL_SCOPE_GLOBAL = 2;
+  SKILL_SCOPE_SERVER = 3;
+}
+
+message SkillSummary {
+  SkillScope scope = 1;
+  string name = 2;
+  string description = 3;
+  bool valid = 4;
+  bool readonly = 5;
+  bool deletable = 6;
+  repeated string diagnostics = 7;
+}
+
+message ListSkillsRequest {
+  string server_id = 1;
+  string server_instance_id = 2;
+}
+
+message ListSkillsResponse {
+  repeated SkillSummary skills = 1;
+}
+
+message GetSkillRequest {
+  string server_id = 1;
+  string server_instance_id = 2;
+  string skill_name = 3;
+}
+
+message GetSkillResponse {
+  SkillSummary skill = 1;
+  string content = 2;
+}
+
+message DeleteSkillRequest {
+  string server_id = 1;
+  string server_instance_id = 2;
+  string skill_name = 3;
+}
+
+message DeleteSkillResponse {
+  bool deleted = 1;
+  string message = 2;
+  string archived_path = 3;
+}
+
+message StartSkillCreationRequest {
+  string server_id = 1;
+  string server_instance_id = 2;
+  string initial_requirement = 3;
+}
+
+message ContinueSkillCreationRequest {
+  string server_id = 1;
+  string server_instance_id = 2;
+  string draft_id = 3;
+  string user_message = 4;
+}
+
+message ConfirmSkillCreationRequest {
+  string server_id = 1;
+  string server_instance_id = 2;
+  string draft_id = 3;
+}
+
+message SkillCreationResponse {
+  string draft_id = 1;
+  string status = 2;
+  string message = 3;
+  repeated string questions = 4;
+  SkillSummary skill = 5;
+  string content = 6;
+  repeated string diagnostics = 7;
 }

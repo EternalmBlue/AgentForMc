@@ -8,6 +8,12 @@ from pathlib import Path
 import grpc
 import pytest
 
+from agent_for_mc.application.skills import (
+    DeleteSkillResult,
+    SkillCreationResult,
+    SkillRecord,
+    SkillScope,
+)
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.interfaces.grpc import agent_bridge_pb2, agent_bridge_pb2_grpc
 from agent_for_mc.interfaces.grpc.runtime import (
@@ -38,6 +44,7 @@ class FakeRuntime:
         self.seen_probe_identity: tuple[str, str] | None = None
         self.seen_prepare_identity: tuple[str, str] | None = None
         self.seen_commit_identity: tuple[str, str] | None = None
+        self.seen_skill_identity: tuple[str, str] | None = None
 
     def probe(self, *, server_id: str, server_instance_id: str) -> None:
         self.seen_probe_identity = (server_id, server_instance_id)
@@ -128,6 +135,103 @@ class FakeRuntime:
             current_refresh_phase="completed",
         )
 
+    def list_skills(self, *, server_id: str, server_instance_id: str):
+        self.seen_skill_identity = (server_id, server_instance_id)
+        return [
+            SkillRecord(
+                scope=SkillScope.OFFICIAL,
+                name="skill-creator",
+                description="Use for skill authoring.",
+                body="# Skill Creator\n\nCreate skills.",
+                path=Path("official") / "skill-creator" / "SKILL.md",
+                valid=True,
+                readonly=True,
+                deletable=False,
+                usage="authoring",
+            ),
+            SkillRecord(
+                scope=SkillScope.SERVER,
+                name="server-rules",
+                description="Use for this server's rules.",
+                body="# Server Rules\n\nFollow local rules.",
+                path=Path("server") / "server-rules" / "SKILL.md",
+                valid=True,
+                readonly=False,
+                deletable=True,
+            ),
+        ]
+
+    def get_skill(self, *, server_id: str, server_instance_id: str, skill_name: str):
+        self.seen_skill_identity = (server_id, server_instance_id)
+        return SkillRecord(
+            scope=SkillScope.SERVER,
+            name=skill_name,
+            description="Use for this server's rules.",
+            body="# Server Rules\n\nFollow local rules.",
+            path=Path("server") / skill_name / "SKILL.md",
+            valid=True,
+            readonly=False,
+            deletable=True,
+        )
+
+    def delete_skill(self, *, server_id: str, server_instance_id: str, skill_name: str):
+        self.seen_skill_identity = (server_id, server_instance_id)
+        return DeleteSkillResult(
+            deleted=True,
+            message=f"skill archived: {skill_name}",
+            archived_path=Path("server") / ".trash" / skill_name,
+        )
+
+    def start_skill_creation(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        initial_requirement: str,
+    ):
+        self.seen_skill_identity = (server_id, server_instance_id)
+        return SkillCreationResult(
+            draft_id="draft-1",
+            status="needs_clarification",
+            message="more detail is needed",
+            questions=("Which plugin?",),
+        )
+
+    def continue_skill_creation(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        draft_id: str,
+        user_message: str,
+    ):
+        self.seen_skill_identity = (server_id, server_instance_id)
+        skill = _fake_server_skill()
+        return SkillCreationResult(
+            draft_id=draft_id,
+            status="draft_ready",
+            message="skill draft is ready for review",
+            skill=skill,
+            content=skill.content,
+        )
+
+    def confirm_skill_creation(
+        self,
+        *,
+        server_id: str,
+        server_instance_id: str,
+        draft_id: str,
+    ):
+        self.seen_skill_identity = (server_id, server_instance_id)
+        skill = _fake_server_skill()
+        return SkillCreationResult(
+            draft_id=draft_id,
+            status="installed",
+            message="skill installed: server-rules",
+            skill=skill,
+            content=skill.content,
+        )
+
 
 class FakeRefreshService:
     def __init__(self):
@@ -155,6 +259,19 @@ class FakeRefreshService:
         self.running = False
 
 
+def _fake_server_skill() -> SkillRecord:
+    return SkillRecord(
+        scope=SkillScope.SERVER,
+        name="server-rules",
+        description="Use for this server's rules.",
+        body="# Server Rules\n\nFollow local rules.",
+        path=Path("server") / "server-rules" / "SKILL.md",
+        valid=True,
+        readonly=False,
+        deletable=True,
+    )
+
+
 @contextmanager
 def running_grpc_server(runtime, *, token: str = "secret-token"):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
@@ -176,9 +293,9 @@ def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         plugin_docs_vector_db_dir=tmp_path / "plugin_docs_vector_db",
         plugin_docs_table_name="plugin_docs",
-        deepseek_api_key="deepseek-key",
-        deepseek_model="deepseek-chat",
-        deepseek_chat_url="https://example.invalid/chat/completions",
+        llm_api_key="deepseek-key",
+        llm_model="deepseek-chat",
+        llm_base_url="https://example.invalid",
         expected_embedding_dimension=1024,
         rewrite_history_turns=4,
         retrieval_top_k=8,
@@ -265,6 +382,7 @@ def test_grpc_probe_returns_ack_without_authorization():
     assert response.backend_name == "AgentForMc"
     assert response.protocol_version == 1
     assert "ask_stream_progress" in response.capabilities
+    assert "skills_v1" in response.capabilities
     assert runtime.seen_probe_identity == ("lobby-1", "instance-1")
 
 
@@ -287,6 +405,86 @@ def test_grpc_probe_rejects_server_id_conflict_without_authorization():
 
     assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
     assert "server.id conflict" in exc_info.value.details()
+
+
+def test_grpc_skill_management_maps_runtime_replies():
+    runtime = FakeRuntime()
+    metadata = (("authorization", "Bearer secret-token"),)
+    with running_grpc_server(runtime) as stub:
+        list_response = stub.ListSkills(
+            agent_bridge_pb2.ListSkillsRequest(
+                server_id="lobby-1",
+                server_instance_id="instance-1",
+            ),
+            metadata=metadata,
+        )
+        get_response = stub.GetSkill(
+            agent_bridge_pb2.GetSkillRequest(
+                server_id="lobby-1",
+                server_instance_id="instance-1",
+                skill_name="server-rules",
+            ),
+            metadata=metadata,
+        )
+        delete_response = stub.DeleteSkill(
+            agent_bridge_pb2.DeleteSkillRequest(
+                server_id="lobby-1",
+                server_instance_id="instance-1",
+                skill_name="server-rules",
+            ),
+            metadata=metadata,
+        )
+
+    assert [skill.name for skill in list_response.skills] == [
+        "skill-creator",
+        "server-rules",
+    ]
+    assert list_response.skills[0].scope == agent_bridge_pb2.SKILL_SCOPE_OFFICIAL
+    assert list_response.skills[0].readonly is True
+    assert list_response.skills[1].deletable is True
+    assert get_response.skill.name == "server-rules"
+    assert "# Server Rules" in get_response.content
+    assert delete_response.deleted is True
+    assert "server-rules" in delete_response.archived_path
+    assert runtime.seen_skill_identity == ("lobby-1", "instance-1")
+
+
+def test_grpc_skill_authoring_maps_draft_flow():
+    runtime = FakeRuntime()
+    metadata = (("authorization", "Bearer secret-token"),)
+    with running_grpc_server(runtime) as stub:
+        first = stub.StartSkillCreation(
+            agent_bridge_pb2.StartSkillCreationRequest(
+                server_id="lobby-1",
+                server_instance_id="instance-1",
+                initial_requirement="permission help",
+            ),
+            metadata=metadata,
+        )
+        second = stub.ContinueSkillCreation(
+            agent_bridge_pb2.ContinueSkillCreationRequest(
+                server_id="lobby-1",
+                server_instance_id="instance-1",
+                draft_id=first.draft_id,
+                user_message="LuckPerms",
+            ),
+            metadata=metadata,
+        )
+        installed = stub.ConfirmSkillCreation(
+            agent_bridge_pb2.ConfirmSkillCreationRequest(
+                server_id="lobby-1",
+                server_instance_id="instance-1",
+                draft_id=first.draft_id,
+            ),
+            metadata=metadata,
+        )
+
+    assert first.status == "needs_clarification"
+    assert first.questions == ["Which plugin?"]
+    assert second.status == "draft_ready"
+    assert second.skill.name == "server-rules"
+    assert installed.status == "installed"
+    assert installed.skill.scope == agent_bridge_pb2.SKILL_SCOPE_SERVER
 
 
 def test_grpc_service_maps_ask_request_and_response():

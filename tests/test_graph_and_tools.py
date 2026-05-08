@@ -584,9 +584,9 @@ def make_settings() -> Settings:
     return Settings(
         plugin_docs_vector_db_dir=Path("data/plugin_docs_vector_db"),
         plugin_docs_table_name="plugin_docs",
-        deepseek_api_key="test",
-        deepseek_model="test-model",
-        deepseek_chat_url="https://api.deepseek.com/chat/completions",
+        llm_api_key="test",
+        llm_model="test-model",
+        llm_base_url="https://api.deepseek.com",
         expected_embedding_dimension=2,
         rewrite_history_turns=4,
         retrieval_top_k=2,
@@ -638,7 +638,7 @@ def test_settings_from_env_loads_dotenv_and_config(tmp_path, monkeypatch):
     env_file.write_text(
         r"""
 RAG_ZHIPU_API_KEY=test-zhipu-key
-RAG_DEEPSEEK_API_KEY=test-deepseek-key
+RAG_LLM_API_KEY=test-deepseek-key
 RAG_GRPC_AUTH_TOKEN=test-grpc-token
 RAG_RERANKER_GRPC_AUTH_TOKEN=test-reranker-token
 """.strip(),
@@ -706,6 +706,24 @@ max_workers = 8
 session_ttl_seconds = 1800
 sync_ttl_seconds = 3600
 upload_tmp_dir = ".cache/grpc_uploads"
+
+[skills]
+official_dir = "official_skills"
+global_dir = "global_skills"
+max_bytes = 4096
+selection_top_k = 2
+draft_ttl_seconds = 600
+
+[web_research]
+enabled = true
+provider = "zhipu"
+url = "https://search.example.com/web_search"
+search_engine = "search_pro"
+top_k = 4
+content_size = "high"
+search_intent = true
+search_recency_filter = "oneYear"
+search_domain_filter = "docs.example.com"
 """.strip(),
         encoding="utf-8",
     )
@@ -713,6 +731,7 @@ upload_tmp_dir = ".cache/grpc_uploads"
     monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
     monkeypatch.setenv("RAG_CONFIG_TOML", str(config_path))
     monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_LLM_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("RAG_RERANKER_GRPC_AUTH_TOKEN", raising=False)
@@ -728,7 +747,7 @@ upload_tmp_dir = ".cache/grpc_uploads"
     assert settings.plugin_docs_bm25_enabled is True
     assert settings.plugin_docs_bm25_top_k == 6
     assert settings.plugin_docs_bm25_auto_create_index is False
-    assert settings.deepseek_api_key == "test-deepseek-key"
+    assert settings.llm_api_key == "test-deepseek-key"
     assert settings.reranker_enabled is True
     assert settings.reranker_model_name_or_path == "maidalun1020/bce-reranker-base_v1"
     assert settings.reranker_host == "127.0.0.2"
@@ -760,6 +779,21 @@ upload_tmp_dir = ".cache/grpc_uploads"
         tmp_path / "data/server_instance_bindings.json"
     ).resolve()
     assert settings.grpc_auth_token == "test-grpc-token"
+    assert settings.official_skills_dir == (tmp_path / "official_skills").resolve()
+    assert settings.global_skills_dir == (tmp_path / "global_skills").resolve()
+    assert settings.skill_max_bytes == 4096
+    assert settings.skill_selection_top_k == 2
+    assert settings.skill_draft_ttl_seconds == 600
+    assert settings.web_research_enabled is True
+    assert settings.web_research_provider == "zhipu"
+    assert settings.web_research_url == "https://search.example.com/web_search"
+    assert settings.web_research_search_engine == "search_pro"
+    assert settings.web_research_top_k == 4
+    assert settings.web_research_content_size == "high"
+    assert settings.web_research_search_intent is True
+    assert settings.web_research_recency_filter == "oneYear"
+    assert settings.web_research_domain_filter == "docs.example.com"
+    assert settings.resolved_web_research_api_key == "test-zhipu-key"
     assert os.environ["HF_HOME"] == str(settings.model_cache_dir)
     assert os.environ["TRANSFORMERS_CACHE"] == str(
         settings.model_cache_dir / "transformers"
@@ -774,7 +808,7 @@ def test_settings_from_env_uses_convention_defaults_for_optional_config(
     env_file.write_text(
         r"""
 RAG_ZHIPU_API_KEY=test-zhipu-key
-RAG_DEEPSEEK_API_KEY=test-deepseek-key
+RAG_LLM_API_KEY=test-deepseek-key
 RAG_GRPC_AUTH_TOKEN=test-grpc-token
 """.strip(),
         encoding="utf-8",
@@ -789,6 +823,7 @@ RAG_GRPC_AUTH_TOKEN=test-grpc-token
     monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
     monkeypatch.setenv("RAG_CONFIG_TOML", str(config_path))
     monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_LLM_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("RAG_RERANKER_GRPC_AUTH_TOKEN", raising=False)
@@ -825,6 +860,21 @@ RAG_GRPC_AUTH_TOKEN=test-grpc-token
     assert settings.plugin_docs_bm25_enabled is True
     assert settings.plugin_docs_bm25_top_k == 7
     assert settings.plugin_docs_bm25_auto_create_index is True
+    assert settings.official_skills_dir.name == "skills"
+    assert settings.global_skills_dir == (tmp_path / "skills").resolve()
+    assert settings.skill_max_bytes == 32768
+    assert settings.skill_selection_top_k == 3
+    assert settings.skill_draft_ttl_seconds == 1800
+    assert settings.web_research_enabled is False
+    assert settings.web_research_provider == "zhipu"
+    assert settings.web_research_url == "https://open.bigmodel.cn/api/paas/v4/web_search"
+    assert settings.web_research_search_engine == "search_std"
+    assert settings.web_research_top_k == 5
+    assert settings.web_research_content_size == "medium"
+    assert settings.web_research_search_intent is False
+    assert settings.web_research_recency_filter == "noLimit"
+    assert settings.web_research_domain_filter == ""
+    assert settings.resolved_web_research_api_key == "test-zhipu-key"
 
 
 def test_settings_from_env_loads_zhipu_embedding_overrides(
@@ -835,7 +885,7 @@ def test_settings_from_env_loads_zhipu_embedding_overrides(
     env_file.write_text(
         r"""
 RAG_ZHIPU_API_KEY=test-zhipu-key
-RAG_DEEPSEEK_API_KEY=test-deepseek-key
+RAG_LLM_API_KEY=test-deepseek-key
 RAG_GRPC_AUTH_TOKEN=test-grpc-token
 """.strip(),
         encoding="utf-8",
@@ -852,6 +902,7 @@ model = "bge-m3"
     monkeypatch.setenv("RAG_ENV_FILE", str(env_file))
     monkeypatch.setenv("RAG_CONFIG_TOML", str(config_path))
     monkeypatch.delenv("RAG_ZHIPU_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_LLM_API_KEY", raising=False)
     monkeypatch.delenv("RAG_DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("RAG_GRPC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("RAG_RERANKER_GRPC_AUTH_TOKEN", raising=False)
@@ -874,6 +925,29 @@ def test_runtime_validation_requires_reranker_token_when_enabled():
     )
 
     with pytest.raises(ConfigurationError, match="RAG_RERANKER_GRPC_AUTH_TOKEN"):
+        validate_runtime_settings(settings)
+
+
+def test_runtime_validation_rejects_unsupported_web_research_provider():
+    settings = replace(
+        make_settings(),
+        expected_embedding_dimension=1024,
+        web_research_enabled=True,
+        web_research_provider="brave",
+    )
+
+    with pytest.raises(ConfigurationError, match="web_research\\.provider"):
+        validate_runtime_settings(settings)
+
+
+def test_runtime_validation_requires_zhipu_key_for_web_research():
+    settings = replace(
+        make_settings(),
+        web_research_enabled=True,
+        embedding_api_key=None,
+    )
+
+    with pytest.raises(ConfigurationError, match="RAG_ZHIPU_API_KEY"):
         validate_runtime_settings(settings)
 
 
@@ -1235,11 +1309,11 @@ def test_plugin_semantic_agent_service_refresh_full_forces_rebuild(tmp_path):
 def test_build_memory_maintenance_agent_uses_configured_model(monkeypatch):
     captured: dict[str, object] = {}
 
-    class FakeChatDeepSeek:
-        def __init__(self, *, model: str, api_key: str, api_base: str, temperature: float, timeout: int):
+    class FakeChatOpenAI:
+        def __init__(self, *, model: str, api_key: str, base_url: str, temperature: float, timeout: int):
             captured["model"] = model
             captured["api_key"] = api_key
-            captured["api_base"] = api_base
+            captured["base_url"] = base_url
             captured["temperature"] = temperature
             captured["timeout"] = timeout
 
@@ -1248,10 +1322,10 @@ def test_build_memory_maintenance_agent_uses_configured_model(monkeypatch):
         return {"agent": "memory-maintenance"}
 
     monkeypatch.setattr(deepagent_memory_agent_module, "create_deep_agent", fake_create_deep_agent)
-    monkeypatch.setattr(deepagent_memory_agent_module, "build_chat_model", lambda *, settings, model_name: FakeChatDeepSeek(
+    monkeypatch.setattr(deepagent_memory_agent_module, "build_chat_model", lambda *, settings, model_name: FakeChatOpenAI(
         model=model_name,
-        api_key=settings.deepseek_api_key,
-        api_base=settings.deepseek_api_base,
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
         temperature=0.1,
         timeout=settings.request_timeout_seconds,
     ))

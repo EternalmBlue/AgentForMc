@@ -4,6 +4,7 @@ from agent_for_mc.application.chat_session import RagChatSession
 from agent_for_mc.application.memory_service import build_memory_service
 from agent_for_mc.application.plugin_semantic_agent import build_plugin_semantic_service
 from agent_for_mc.application.retrieval import Retriever
+from agent_for_mc.application.skills import SkillRegistry
 from agent_for_mc.infrastructure.clients import build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
 from agent_for_mc.infrastructure.observability import configure_observability
@@ -21,6 +22,7 @@ def build_session(
     memory_scope_id: str,
     ranker: object | None = None,
     plugin_semantic_service: object | None = None,
+    skill_registry: SkillRegistry | None = None,
     attach_plugin_semantic_service_to_session: bool = True,
     configure_runtime_observability: bool = True,
 ) -> RagChatSession:
@@ -72,4 +74,5 @@ def build_session(
             if attach_plugin_semantic_service_to_session
             else None
         ),
+        skill_registry=skill_registry,
     )

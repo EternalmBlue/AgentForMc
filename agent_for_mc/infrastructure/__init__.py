@@ -1,6 +1,7 @@
 from agent_for_mc.infrastructure.clients import (
     DeepSeekChatClient,
     EmbeddingClient,
+    OpenAICompatibleChatClient,
     OpenAICompatibleEmbeddingClient,
     build_embedding_client,
 )
@@ -11,6 +12,7 @@ __all__ = [
     "BASE_DIR",
     "DeepSeekChatClient",
     "EmbeddingClient",
+    "OpenAICompatibleChatClient",
     "OpenAICompatibleEmbeddingClient",
     "LancePluginVectorStore",
     "Settings",

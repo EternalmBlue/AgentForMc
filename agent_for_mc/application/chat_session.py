@@ -16,6 +16,10 @@ from agent_for_mc.application.deepagent_state import (
 from agent_for_mc.application.plugin_semantic_agent import PluginSemanticAgentService
 from agent_for_mc.application.memory_service import MemoryService, format_memory_context
 from agent_for_mc.application.prompts import format_history
+from agent_for_mc.application.skills import (
+    SkillRegistry,
+    format_skills_for_system_message,
+)
 from agent_for_mc.domain.errors import ServiceError
 from agent_for_mc.domain.models import AnswerResult
 from agent_for_mc.infrastructure.config import Settings
@@ -31,12 +35,14 @@ class RagChatSession:
         deep_agent: Any,
         memory_service: MemoryService | None = None,
         plugin_semantic_service: PluginSemanticAgentService | None = None,
+        skill_registry: SkillRegistry | None = None,
     ):
         self._settings = settings
         self._vector_store = vector_store
         self._deep_agent = deep_agent
         self._memory_service = memory_service
         self._plugin_semantic_service = plugin_semantic_service
+        self._skill_registry = skill_registry
         self._history: deque[BaseMessage] = deque(
             maxlen=settings.rewrite_history_turns * 2
         )
@@ -65,6 +71,7 @@ class RagChatSession:
         self,
         question: str,
         *,
+        server_id: str = "",
         server_plugins: list[str] | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
     ) -> AnswerResult:
@@ -77,8 +84,37 @@ class RagChatSession:
             history = list(self._history)
             standalone_query = question.strip()
             memory_messages: list[BaseMessage] = []
+            skill_messages: list[BaseMessage] = []
 
             _emit_progress(progress_callback, "started", "Ask request accepted.")
+            if self._skill_registry is not None and server_id:
+                try:
+                    _emit_progress(
+                        progress_callback,
+                        "skills_select",
+                        "Selecting relevant skills.",
+                    )
+                    selected_skills = self._skill_registry.select_skills(
+                        server_id=server_id,
+                        question=question,
+                        server_plugins=server_plugins or [],
+                    )
+                    skills_context = format_skills_for_system_message(selected_skills)
+                    if skills_context:
+                        skill_messages.append(SystemMessage(content=skills_context))
+                    _emit_progress(
+                        progress_callback,
+                        "skills_ready",
+                        "Skill context is ready.",
+                    )
+                except Exception:
+                    skill_messages = []
+                    _emit_progress(
+                        progress_callback,
+                        "skills_ready",
+                        "Skill context was skipped.",
+                    )
+
             if self._memory_service is not None:
                 try:
                     _emit_progress(
@@ -122,6 +158,7 @@ class RagChatSession:
                     {
                         "messages": [
                             *memory_messages,
+                            *skill_messages,
                             *history,
                             HumanMessage(content=question),
                         ]

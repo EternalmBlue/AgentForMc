@@ -80,10 +80,10 @@ class OpenAICompatibleEmbeddingClient:
             return _extract_embedding(data, "Zhipu embedding")
 
 
-class DeepSeekChatClient:
+class OpenAICompatibleChatClient:
     def __init__(self, settings: Settings, model_name: str | None = None):
         self._settings = settings
-        self._model_name = model_name or settings.deepseek_model
+        self._model_name = model_name or settings.llm_model
 
     def chat(
         self,
@@ -92,18 +92,21 @@ class DeepSeekChatClient:
         temperature: float = 0.1,
     ) -> str:
         with trace_operation(
-            "deepseek.chat",
+            "llm.chat",
             attributes={"component": "llm", "model": self._model_name},
-            metric_name="rag_deepseek_chat_seconds",
+            metric_name="rag_llm_chat_seconds",
         ):
-            record_counter("rag_deepseek_chat_requests_total")
-            if not self._settings.deepseek_api_key:
-                raise ConfigurationError("Missing environment variable RAG_DEEPSEEK_API_KEY.")
+            record_counter("rag_llm_chat_requests_total")
+            if not self._settings.llm_api_key:
+                raise ConfigurationError(
+                    "Missing LLM API key. "
+                    "Set the env var RAG_LLM_API_KEY (or RAG_DEEPSEEK_API_KEY for backward compatibility)."
+                )
 
             response = _post_json(
-                self._settings.deepseek_chat_url,
+                self._settings.llm_chat_url,
                 headers={
-                    "Authorization": f"Bearer {self._settings.deepseek_api_key}",
+                    "Authorization": f"Bearer {self._settings.llm_api_key}",
                     "Content-Type": "application/json",
                 },
                 payload={
@@ -112,18 +115,21 @@ class DeepSeekChatClient:
                     "temperature": temperature,
                 },
                 timeout_seconds=self._settings.request_timeout_seconds,
-                service_name="DeepSeek",
+                service_name="LLM",
             )
-            data = _read_json(response, "DeepSeek")
+            data = _read_json(response, "LLM")
             try:
                 content = data["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError) as exc:
-                raise ServiceError("DeepSeek response is missing choices[0].message.content.") from exc
+                raise ServiceError("LLM response is missing choices[0].message.content.") from exc
 
             normalized = str(content).strip()
             if not normalized:
-                raise ServiceError("DeepSeek returned an empty response.")
+                raise ServiceError("LLM returned an empty response.")
             return normalized
+
+
+DeepSeekChatClient = OpenAICompatibleChatClient
 
 
 def _post_json(

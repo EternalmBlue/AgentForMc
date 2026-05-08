@@ -10,7 +10,7 @@ from agent_for_mc.interfaces.deepagent.prompts import MEMORY_MAINTENANCE_SYSTEM_
 
 def build_memory_maintenance_agent(*, settings: Settings) -> object | None:
     configure_observability()
-    if not settings.deepseek_api_key:
+    if not settings.llm_api_key:
         return None
 
     with trace_operation(

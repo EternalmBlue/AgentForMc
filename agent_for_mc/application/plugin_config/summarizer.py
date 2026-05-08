@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_for_mc.infrastructure.clients import DeepSeekChatClient
+from agent_for_mc.infrastructure.clients import OpenAICompatibleChatClient
 from agent_for_mc.infrastructure.observability import record_counter, trace_operation
 
 
@@ -11,7 +11,7 @@ def normalize_search_query(search_query: str) -> str:
 def summarize_plugin_configs(
     search_query: str,
     *,
-    client: DeepSeekChatClient,
+    client: OpenAICompatibleChatClient,
     summary_max_chars: int,
     semantic_context: str = "",
 ) -> str:

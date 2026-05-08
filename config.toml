@@ -10,6 +10,7 @@
 # - 上传的服务器配置语义记忆存放在 ./data/server_config_semantic_vector_db
 # - 启用用户长期语义记忆后，数据存放在 ./data/user_semantic_memory.sqlite3
 # - server.id 与服务器实例的绑定关系存放在 ./data/server_instance_bindings.json
+# - LLM 默认使用 DeepSeek Chat（OpenAI 兼容接口）
 # - Embedding 默认使用兼容 OpenAI 接口的智谱 embedding-3
 # - Embedding 维度由 embedding.dimensions 决定
 
@@ -26,6 +27,23 @@ timeout_seconds = 10
 # url = "https://open.bigmodel.cn/api/paas/v4/embeddings"
 # model = "embedding-3"
 # dimensions = 1024
+#
+# 覆盖 LLM Chat 模型或 OpenAI-compatible base URL：
+# [llm]
+# model = "deepseek-chat"
+# base_url = "https://api.deepseek.com"
+#
+# 启用 Skill Creator 的可选公网检索增强，复用 RAG_ZHIPU_API_KEY：
+# [web_research]
+# enabled = false
+# provider = "zhipu"
+# url = "https://open.bigmodel.cn/api/paas/v4/web_search"
+# search_engine = "search_std"
+# top_k = 5
+# content_size = "medium"
+# search_intent = false
+# search_recency_filter = "noLimit"
+# search_domain_filter = ""
 #
 # 注意：
 # - embedding.dimensions 必须是 256、512、1024、2048 之一
