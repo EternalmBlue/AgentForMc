@@ -4,7 +4,7 @@ import re
 from dataclasses import replace
 
 from agent_for_mc.domain.models import RetrievedDoc
-from agent_for_mc.domain.errors import ServiceError
+from agent_for_mc.domain.errors import ServiceError, StartupValidationError
 from agent_for_mc.infrastructure.clients import EmbeddingClient
 from agent_for_mc.infrastructure.ranker import Ranker
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
@@ -45,12 +45,20 @@ class Retriever:
         ):
             record_counter("rag_retrieval_requests_total")
             normalized_search_query = normalize_search_query(search_query)
-            boosted_docs = self._vector_store.find_name_matches(normalized_search_query)
+            try:
+                boosted_docs = self._vector_store.find_name_matches(normalized_search_query)
+            except StartupValidationError:
+                record_counter("rag_retrieval_plugin_docs_unavailable_total")
+                return []
             query_embedding = self._embedding_client.embed_query(normalized_search_query)
-            vector_docs = self._vector_store.search_by_embedding(
-                query_embedding,
-                top_k=top_k,
-            )
+            try:
+                vector_docs = self._vector_store.search_by_embedding(
+                    query_embedding,
+                    top_k=top_k,
+                )
+            except StartupValidationError:
+                record_counter("rag_retrieval_vector_failures_total")
+                vector_docs = []
             bm25_docs = self._search_by_bm25(normalized_search_query, top_k=top_k)
             merged_docs = merge_retrieved_docs(boosted_docs, vector_docs, bm25_docs)
             if self._ranker is not None:

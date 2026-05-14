@@ -1536,6 +1536,23 @@ def test_lance_plugin_vector_store_searches_bm25(tmp_path):
     assert docs[0].distance > 0
 
 
+def test_retriever_returns_no_docs_when_plugin_vector_store_is_missing(tmp_path):
+    class FailingEmbeddingClient:
+        def embed_query(self, query: str):
+            raise AssertionError("embedding should not be requested when plugin docs DB is unavailable")
+
+    retriever = Retriever(
+        LancePluginVectorStore(
+            tmp_path / "missing_plugin_docs_vector_db",
+            "plugin_docs",
+            expected_embedding_dimension=1024,
+        ),
+        FailingEmbeddingClient(),
+    )
+
+    assert retriever.retrieve("Residence 领地数量怎么配置？") == []
+
+
 def test_build_session_uses_remote_reranker_client(monkeypatch):
     built_clients: list[Settings] = []
     fake_ranker = object()

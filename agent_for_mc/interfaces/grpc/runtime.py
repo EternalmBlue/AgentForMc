@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -39,7 +40,7 @@ from agent_for_mc.application.skills import (
     SkillValidationError,
     ZhipuWebResearchProvider,
 )
-from agent_for_mc.domain.errors import RagForMcError
+from agent_for_mc.domain.errors import RagForMcError, StartupValidationError
 from agent_for_mc.domain.models import AnswerResult, RetrievedDoc
 from agent_for_mc.infrastructure.clients import OpenAICompatibleChatClient, build_embedding_client
 from agent_for_mc.infrastructure.config import Settings
@@ -51,6 +52,9 @@ from agent_for_mc.infrastructure.observability import (
 from agent_for_mc.infrastructure.ranker import build_reranker_client
 from agent_for_mc.infrastructure.vector_store import LancePluginVectorStore
 from agent_for_mc.interfaces.session_factory import build_session
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class BridgeRuntimeError(Exception):
@@ -398,12 +402,27 @@ class AgentBridgeRuntime:
             self._settings.plugin_docs_table_name,
             expected_embedding_dimension=self._settings.expected_embedding_dimension,
         )
-        stats = store.validate()
+        try:
+            stats = store.validate()
+        except StartupValidationError as exc:
+            record_counter("rag_plugin_docs_vector_store_unavailable_total")
+            LOGGER.warning(
+                "Plugin docs vector store is unavailable; plugin-document retrieval will be skipped: %s",
+                exc,
+            )
+            return None
         if (
             self._settings.plugin_docs_bm25_enabled
             and self._settings.plugin_docs_bm25_auto_create_index
         ):
-            store.ensure_bm25_index()
+            try:
+                store.ensure_bm25_index()
+            except StartupValidationError as exc:
+                record_counter("rag_plugin_docs_bm25_startup_failures_total")
+                LOGGER.warning(
+                    "Plugin docs BM25 index is unavailable; BM25 retrieval will be skipped until it recovers: %s",
+                    exc,
+                )
         return stats
 
     def probe(self, *, server_id: str, server_instance_id: str) -> None:

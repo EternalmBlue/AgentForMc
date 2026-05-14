@@ -6,6 +6,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import grpc
 
 from . import agent_bridge_pb2, agent_bridge_pb2_grpc
+from agent_for_mc import __version__
 from agent_for_mc.application.skills import (
     DeleteSkillResult,
     SkillCreationResult,
@@ -247,7 +248,7 @@ def _resolve_backend_version() -> str:
             return package_version(distribution_name)
         except PackageNotFoundError:
             continue
-    return "dev"
+    return __version__
 
 
 def _build_ask_command(request) -> AskCommand:

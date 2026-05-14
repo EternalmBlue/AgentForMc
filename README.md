@@ -72,7 +72,7 @@ flowchart LR
 - Python 3.11+ 推荐
 - 可访问 OpenAI-compatible LLM Chat API（默认 DeepSeek）
 - 可访问智谱 OpenAI-compatible embedding API
-- 已准备好的插件文档 LanceDB 向量库
+- 推荐准备插件文档 LanceDB 向量库，用于增强插件文档检索
 - 与插件端一致的 gRPC token
 
 核心 Python 依赖见 `requirements.txt`，包括：
@@ -145,9 +145,9 @@ RAG_RERANKER_GRPC_AUTH_TOKEN= # 仅启用远程 reranker 时需要
 
 `RAG_GRPC_AUTH_TOKEN` 必须和插件端 `plugins/Agent4Minecraft/config.yml` 中的 `backend.authToken` 一致。
 
-### 4. 准备插件文档向量库
+### 4. 可选：准备插件文档向量库
 
-后端启动时会校验插件文档向量库。默认路径是：
+插件文档向量库用于增强插件文档检索。默认路径是：
 
 ```text
 data/plugin_docs_vector_db
@@ -169,7 +169,7 @@ plugin_english_name
 embedding
 ```
 
-`embedding` 字段维度必须和 `config.toml` 中的 `embedding.dimensions` 一致，默认是 `1024`。如果公开仓库没有包含 `data/`，部署时需要单独准备或恢复这份向量库数据；否则启动会报 `Lance 数据库目录不存在` 或无法打开表。
+`embedding` 字段维度必须和 `config.toml` 中的 `embedding.dimensions` 一致，默认是 `1024`。如果公开仓库没有包含 `data/`，部署时可以先不准备这份向量库数据；后端会跳过插件文档检索，让问答链路按大模型自有知识谨慎回答。准备好向量库后，具体插件文档、权限节点和配置项定位会更准确。
 
 ### 5. 启动 gRPC 后端
 
@@ -353,7 +353,7 @@ bindings_path = "data/server_instance_bindings.json"
 
 | 路径 | 说明 |
 | --- | --- |
-| `data/plugin_docs_vector_db` | 插件文档向量库，启动时必需 |
+| `data/plugin_docs_vector_db` | 可选插件文档向量库，用于增强插件文档检索 |
 | `data/server_config_semantic_vector_db` | 上传配置抽取后的语义记忆向量库 |
 | `data/user_semantic_memory.sqlite3` | 可选的用户长期语义记忆 |
 | `data/server_instance_bindings.json` | `server.id` 与 `server_instance_id` 的绑定关系 |
@@ -545,9 +545,9 @@ gRPC 服务需要认证 token。确认 `.env` 包含：
 RAG_GRPC_AUTH_TOKEN=...
 ```
 
-### 启动时报 Lance 数据库目录不存在
+### 日志提示 Lance 数据库目录不存在
 
-默认插件文档向量库 `data/plugin_docs_vector_db` 不存在。需要准备 LanceDB 数据，或者在 `config.toml` 的 `[paths]` 中配置正确路径。
+默认插件文档向量库 `data/plugin_docs_vector_db` 不存在。后端会跳过插件文档检索，基础问答仍可继续使用大模型自有知识。要启用插件文档 RAG，请准备 LanceDB 数据，或者在 `config.toml` 的 `[paths]` 中配置正确路径。
 
 ### 插件提示后端认证失败
 

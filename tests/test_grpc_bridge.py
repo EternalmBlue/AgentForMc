@@ -356,6 +356,21 @@ def test_server_instance_registry_rejects_reused_server_id(tmp_path: Path):
         )
 
 
+def test_runtime_validate_startup_allows_missing_plugin_docs_vector_store(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "agent_for_mc.interfaces.grpc.runtime.build_plugin_semantic_service",
+        lambda settings: None,
+    )
+    runtime = AgentBridgeRuntime(make_settings(tmp_path))
+    try:
+        assert runtime.validate_startup() is None
+    finally:
+        runtime.close()
+
+
 def test_grpc_service_requires_authorization():
     runtime = FakeRuntime()
     with running_grpc_server(runtime) as stub:
@@ -380,6 +395,7 @@ def test_grpc_probe_returns_ack_without_authorization():
 
     assert response.ack is True
     assert response.backend_name == "AgentForMc"
+    assert response.backend_version == "1.2.1"
     assert response.protocol_version == 1
     assert "ask_stream_progress" in response.capabilities
     assert "skills_v1" in response.capabilities
